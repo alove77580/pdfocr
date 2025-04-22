@@ -1,0 +1,5 @@
+PyQt5>=5.15.9
+pdf2image>=1.16.3
+pytesseract>=0.3.10
+Pillow>=9.5.0
+pyinstaller>=5.13.0 
