@@ -34,8 +34,19 @@ def build_exe():
         os.makedirs('tesseract')
     
     # 复制Tesseract文件
-    tesseract_install_dir = r'D:\Program Files\Tesseract-OCR'  # 默认安装路径
-    if os.path.exists(tesseract_install_dir):
+    tesseract_install_dirs = [
+        r'D:\Program Files\Tesseract-OCR',
+        r'C:\Program Files\Tesseract-OCR',
+        r'C:\Program Files (x86)\Tesseract-OCR'
+    ]
+    
+    tesseract_install_dir = None
+    for dir_path in tesseract_install_dirs:
+        if os.path.exists(dir_path):
+            tesseract_install_dir = dir_path
+            break
+    
+    if tesseract_install_dir:
         # 复制tesseract.exe
         shutil.copy2(
             os.path.join(tesseract_install_dir, 'tesseract.exe'),
@@ -61,10 +72,26 @@ def build_exe():
             'libwebp-7.dll'
         ]
         copy_dlls(tesseract_install_dir, 'tesseract', tesseract_dlls)
+    else:
+        print("警告: 未找到Tesseract-OCR安装目录")
     
     # 复制Poppler文件
-    poppler_install_dir = r'D:\Program Files\poppler-24.08.0\Library\bin'  # 请根据实际安装路径修改
-    if os.path.exists(poppler_install_dir):
+    poppler_install_dirs = [
+        r'D:\Program Files\poppler-24.08.0\Library\bin',
+        r'C:\Program Files\poppler-24.08.0\Library\bin',
+        r'C:\Program Files (x86)\poppler-24.08.0\Library\bin',
+        r'D:\Program Files\poppler\bin',
+        r'C:\Program Files\poppler\bin',
+        r'C:\Program Files (x86)\poppler\bin'
+    ]
+    
+    poppler_install_dir = None
+    for dir_path in poppler_install_dirs:
+        if os.path.exists(dir_path):
+            poppler_install_dir = dir_path
+            break
+    
+    if poppler_install_dir:
         poppler_dst_dir = 'poppler'
         if not os.path.exists(poppler_dst_dir):
             os.makedirs(poppler_dst_dir)
@@ -85,6 +112,8 @@ def build_exe():
             'libstdc++-6.dll'
         ]
         copy_dlls(poppler_install_dir, 'poppler', poppler_dlls)
+    else:
+        print("警告: 未找到Poppler安装目录")
     
     # 使用PyInstaller打包
     subprocess.run([

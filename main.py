@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, 
                            QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
                            QMessageBox)
@@ -19,15 +20,54 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def get_tesseract_path():
+    # 首先检查打包后的路径
     tesseract_path = get_resource_path(os.path.join('tesseract', 'tesseract.exe'))
     if os.path.exists(tesseract_path):
         return tesseract_path
+    
+    # 然后检查系统环境变量中的路径
+    tesseract_path = shutil.which('tesseract')
+    if tesseract_path:
+        return tesseract_path
+    
+    # 最后检查常见安装路径
+    common_paths = [
+        r'D:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
     return None
 
 def get_poppler_path():
+    # 首先检查打包后的路径
     poppler_path = get_resource_path('poppler')
     if os.path.exists(poppler_path):
         return poppler_path
+    
+    # 检查系统环境变量中的路径
+    poppler_path = os.environ.get('POPPLER_HOME')
+    if poppler_path and os.path.exists(poppler_path):
+        return poppler_path
+    
+    # 检查常见安装路径
+    common_paths = [
+        r'D:\Program Files\poppler-24.08.0\Library\bin',
+        r'C:\Program Files\poppler-24.08.0\Library\bin',
+        r'C:\Program Files (x86)\poppler-24.08.0\Library\bin',
+        r'D:\Program Files\poppler\bin',
+        r'C:\Program Files\poppler\bin',
+        r'C:\Program Files (x86)\poppler\bin'
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
     return None
 
 def check_dependencies():

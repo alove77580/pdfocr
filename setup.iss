@@ -50,6 +50,8 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "dist\PDF_OCR_Tool\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\PDF_OCR_Tool\tesseract\*"; DestDir: "{app}\tesseract"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\PDF_OCR_Tool\poppler\*"; DestDir: "{app}\poppler"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "dist\PDF_OCR_Tool\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -70,6 +72,15 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    // 安装完成后的操作
+    // 检查必要的文件是否存在
+    if not FileExists(ExpandConstant('{app}\tesseract\tesseract.exe')) then
+    begin
+      MsgBox('警告：Tesseract-OCR组件可能未正确安装，程序可能无法正常工作。', mbError, MB_OK);
+    end;
+    
+    if not FileExists(ExpandConstant('{app}\poppler\pdfinfo.exe')) then
+    begin
+      MsgBox('警告：Poppler组件可能未正确安装，程序可能无法正常工作。', mbError, MB_OK);
+    end;
   end;
 end; 
