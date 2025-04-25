@@ -9,13 +9,15 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, 
                            QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
                            QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
-                           QDialogButtonBox, QFontComboBox, QListWidget, QSplitter, QMenu)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QThreadPool, QRunnable, QMetaObject, Q_ARG, QObject
-from PyQt5.QtGui import QClipboard, QDragEnterEvent, QDropEvent
+                           QDialogButtonBox, QFontComboBox, QListWidget, QSplitter, QMenu,
+                           QSystemTrayIcon, QAction, QTabWidget, QStyle, QGroupBox)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QThreadPool, QRunnable, QMetaObject, Q_ARG, QObject, QSettings
+from PyQt5.QtGui import QClipboard, QDragEnterEvent, QDropEvent, QIcon
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -162,13 +164,48 @@ class OCRConfigDialog(QDialog):
         
         layout = QVBoxLayout()
         
-        # 添加配置选项
-        self.oem_combo = QComboBox()
-        self.oem_combo.addItems(["0 - 传统模式", "1 - LSTM模式", "2 - 传统+LSTM", "3 - 默认"])
-        self.oem_combo.setCurrentIndex(3)
-        layout.addWidget(QLabel("OCR引擎模式:"))
-        layout.addWidget(self.oem_combo)
+        # 语言设置
+        language_group = QGroupBox("语言设置")
+        language_layout = QVBoxLayout()
+        self.language_combo = QComboBox()
+        self.language_combo.addItems([
+            "中文 (chi_sim)",
+            "英文 (eng)",
+            "日文 (jpn)",
+            "韩文 (kor)",
+            "中文+英文 (chi_sim+eng)",
+            "自动检测"
+        ])
+        language_layout.addWidget(QLabel("选择语言:"))
+        language_layout.addWidget(self.language_combo)
+        language_group.setLayout(language_layout)
         
+        # OCR引擎设置
+        engine_group = QGroupBox("OCR引擎设置")
+        engine_layout = QVBoxLayout()
+        
+        # DPI设置
+        dpi_layout = QHBoxLayout()
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(100, 1200)
+        self.dpi_spin.setValue(600)
+        self.dpi_spin.setSingleStep(100)
+        dpi_layout.addWidget(QLabel("DPI:"))
+        dpi_layout.addWidget(self.dpi_spin)
+        engine_layout.addLayout(dpi_layout)
+        
+        # OEM模式
+        self.oem_combo = QComboBox()
+        self.oem_combo.addItems([
+            "0 - 传统模式",
+            "1 - LSTM模式",
+            "2 - 传统+LSTM",
+            "3 - 默认"
+        ])
+        engine_layout.addWidget(QLabel("OCR引擎模式:"))
+        engine_layout.addWidget(self.oem_combo)
+        
+        # PSM模式
         self.psm_combo = QComboBox()
         self.psm_combo.addItems([
             "0 - 仅方向检测",
@@ -186,28 +223,60 @@ class OCRConfigDialog(QDialog):
             "12 - 稀疏文本+方向检测",
             "13 - 原始行"
         ])
-        self.psm_combo.setCurrentIndex(6)
-        layout.addWidget(QLabel("页面分割模式:"))
-        layout.addWidget(self.psm_combo)
+        engine_layout.addWidget(QLabel("页面分割模式:"))
+        engine_layout.addWidget(self.psm_combo)
         
-        self.dpi_spin = QSpinBox()
-        self.dpi_spin.setRange(100, 1200)
-        self.dpi_spin.setValue(600)
-        self.dpi_spin.setSingleStep(100)
-        layout.addWidget(QLabel("DPI:"))
-        layout.addWidget(self.dpi_spin)
+        engine_group.setLayout(engine_layout)
         
+        # 图像预处理设置
+        preprocess_group = QGroupBox("图像预处理设置")
+        preprocess_layout = QVBoxLayout()
+        
+        # 对比度
+        contrast_layout = QHBoxLayout()
         self.contrast_slider = QSlider(Qt.Horizontal)
         self.contrast_slider.setRange(0, 200)
         self.contrast_slider.setValue(100)
-        layout.addWidget(QLabel("对比度:"))
-        layout.addWidget(self.contrast_slider)
+        self.contrast_label = QLabel("100%")
+        contrast_layout.addWidget(QLabel("对比度:"))
+        contrast_layout.addWidget(self.contrast_slider)
+        contrast_layout.addWidget(self.contrast_label)
+        self.contrast_slider.valueChanged.connect(
+            lambda v: self.contrast_label.setText(f"{v}%"))
         
+        # 亮度
+        brightness_layout = QHBoxLayout()
         self.brightness_slider = QSlider(Qt.Horizontal)
         self.brightness_slider.setRange(0, 200)
         self.brightness_slider.setValue(100)
-        layout.addWidget(QLabel("亮度:"))
-        layout.addWidget(self.brightness_slider)
+        self.brightness_label = QLabel("100%")
+        brightness_layout.addWidget(QLabel("亮度:"))
+        brightness_layout.addWidget(self.brightness_slider)
+        brightness_layout.addWidget(self.brightness_label)
+        self.brightness_slider.valueChanged.connect(
+            lambda v: self.brightness_label.setText(f"{v}%"))
+        
+        # 锐化
+        sharpen_layout = QHBoxLayout()
+        self.sharpen_slider = QSlider(Qt.Horizontal)
+        self.sharpen_slider.setRange(0, 200)
+        self.sharpen_slider.setValue(100)
+        self.sharpen_label = QLabel("100%")
+        sharpen_layout.addWidget(QLabel("锐化:"))
+        sharpen_layout.addWidget(self.sharpen_slider)
+        sharpen_layout.addWidget(self.sharpen_label)
+        self.sharpen_slider.valueChanged.connect(
+            lambda v: self.sharpen_label.setText(f"{v}%"))
+        
+        preprocess_layout.addLayout(contrast_layout)
+        preprocess_layout.addLayout(brightness_layout)
+        preprocess_layout.addLayout(sharpen_layout)
+        preprocess_group.setLayout(preprocess_layout)
+        
+        # 添加所有组到主布局
+        layout.addWidget(language_group)
+        layout.addWidget(engine_group)
+        layout.addWidget(preprocess_group)
         
         # 添加按钮
         buttons = QDialogButtonBox(
@@ -221,11 +290,13 @@ class OCRConfigDialog(QDialog):
     
     def get_config(self):
         return {
+            'language': self.language_combo.currentText(),
             'oem': self.oem_combo.currentIndex(),
             'psm': self.psm_combo.currentIndex(),
             'dpi': self.dpi_spin.value(),
             'contrast': self.contrast_slider.value() / 100.0,
-            'brightness': self.brightness_slider.value() / 100.0
+            'brightness': self.brightness_slider.value() / 100.0,
+            'sharpen': self.sharpen_slider.value() / 100.0
         }
 
 class OCRWorker(QRunnable):
@@ -265,6 +336,7 @@ class OCRWorker(QRunnable):
             # 将PDF转换为图像
             try:
                 self.log_callback("开始转换PDF...")
+                self.log_callback(f"使用DPI: {self.config['dpi']}")
                 images = convert_from_path(
                     self.pdf_path,
                     poppler_path=poppler_path,
@@ -288,71 +360,140 @@ class OCRWorker(QRunnable):
             os.environ['TESSDATA_PREFIX'] = tessdata_path
             self.log_callback(f"TESSDATA_PREFIX设置为: {tessdata_path}")
             
+            # 获取语言设置
+            language = self.config['language'].split(' ')[-1].strip('()')
+            if language == "自动检测":
+                self.log_callback("正在检测文档语言...")
+                language = self.detect_language(images[0])
+                self.log_callback(f"检测到语言: {language}")
+            else:
+                self.log_callback(f"使用指定语言: {language}")
+            
             # 检查语言文件是否存在
-            for lang in ['chi_sim.traineddata', 'eng.traineddata', 'equ.traineddata']:
-                lang_path = os.path.join(tessdata_path, lang)
+            for lang in language.split('+'):
+                lang_path = os.path.join(tessdata_path, f"{lang}.traineddata")
                 if not os.path.exists(lang_path):
                     raise Exception(f"找不到语言文件: {lang}")
                 self.log_callback(f"找到语言文件: {lang}")
             
             # 使用配置的参数
             custom_config = f'--oem {self.config["oem"]} --psm {self.config["psm"]}'
+            self.log_callback(f"OCR参数: {custom_config}")
+            self.log_callback(f"图像预处理: 对比度={self.config['contrast']}, 亮度={self.config['brightness']}, 锐化={self.config['sharpen']}")
             
-            # 对每一页进行OCR
-            for i, image in enumerate(images):
-                if self._stop_event.is_set():
-                    self.log_callback("处理已取消")
-                    return
+            # 创建线程池
+            # 根据CPU核心数动态设置线程数
+            cpu_count = os.cpu_count() or 4
+            max_workers = min(cpu_count * 2, 16)  # 最多16个线程
+            self.log_callback(f"使用{max_workers}个线程并行处理")
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 准备任务列表
+                futures = []
+                for i, image in enumerate(images):
+                    if self._stop_event.is_set():
+                        self.log_callback("处理已取消")
+                        return
+                    futures.append(executor.submit(self._process_page, i, image, language, custom_config))
                 
-                try:
-                    self.log_callback(f"正在处理第{i+1}页...")
-                    
-                    # 预处理图像
-                    if image.mode != 'L':
-                        image = image.convert('L')
-                    
-                    # 应用配置的对比度和亮度
-                    from PIL import ImageEnhance
-                    enhancer = ImageEnhance.Contrast(image)
-                    image = enhancer.enhance(self.config['contrast'])
-                    enhancer = ImageEnhance.Brightness(image)
-                    image = enhancer.enhance(self.config['brightness'])
-                    
-                    # 进行OCR识别
-                    text = pytesseract.image_to_string(
-                        image,
-                        config=custom_config,
-                        lang='chi_sim+eng+equ'
-                    )
-                    
-                    result_text += f"=== 第 {i+1} 页 ===\n{text}\n\n"
-                    progress = int((i + 1) / total_pages * 100)
-                    self.progress_callback(progress)
-                except Exception as e:
-                    self.log_callback(f"OCR识别错误: {str(e)}")
-                    self.log_callback(traceback.format_exc())
-                    raise Exception(f"OCR识别失败: {str(e)}")
+                # 等待所有任务完成并收集结果
+                for future in futures:
+                    if self._stop_event.is_set():
+                        self.log_callback("处理已取消")
+                        return
+                    try:
+                        page_num, page_text = future.result()
+                        result_text += f"=== 第 {page_num+1} 页 ===\n{page_text}\n\n"
+                        progress = int((page_num + 1) / total_pages * 100)
+                        self.progress_callback(progress)
+                    except Exception as e:
+                        self.log_callback(f"页面处理错误: {str(e)}")
+                        self.log_callback(traceback.format_exc())
+                        raise Exception(f"页面处理失败: {str(e)}")
             
             # 缓存结果
+            self.log_callback("正在缓存结果...")
             self._cache_result(cache_key, result_text)
+            self.log_callback("处理完成")
             
             self.finished_callback(result_text)
         except Exception as e:
             error_msg = f"错误: {str(e)}\n\n详细信息:\n{traceback.format_exc()}"
             self.finished_callback(error_msg)
     
+    def _process_page(self, page_num, image, language, custom_config):
+        """处理单个页面的OCR"""
+        try:
+            self.log_callback(f"正在处理第{page_num+1}页...")
+            
+            # 预处理图像
+            if image.mode != 'L':
+                image = image.convert('L')
+                self.log_callback("转换为灰度图像")
+            
+            # 应用配置的对比度和亮度
+            from PIL import ImageEnhance
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(self.config['contrast'])
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(self.config['brightness'])
+            self.log_callback("应用对比度和亮度调整")
+            
+            # 应用锐化
+            if self.config['sharpen'] != 1.0:
+                from PIL import ImageFilter
+                image = image.filter(ImageFilter.UnsharpMask(
+                    radius=2, percent=self.config['sharpen']*100, threshold=3))
+                self.log_callback("应用锐化处理")
+            
+            # 进行OCR识别，使用更快的配置
+            self.log_callback("开始OCR识别...")
+            text = pytesseract.image_to_string(
+                image,
+                config=custom_config,
+                lang=language,
+                timeout=30  # 设置超时时间
+            )
+            self.log_callback("OCR识别完成")
+            
+            return page_num, text
+        except Exception as e:
+            self.log_callback(f"页面{page_num+1}处理错误: {str(e)}")
+            raise
+    
+    def detect_language(self, image):
+        # 简单的语言检测实现
+        # 这里可以使用更复杂的语言检测算法
+        try:
+            # 尝试使用英文识别
+            text = pytesseract.image_to_string(image, lang='eng')
+            if len(text.strip()) > 0:
+                return 'eng'
+            
+            # 尝试使用中文识别
+            text = pytesseract.image_to_string(image, lang='chi_sim')
+            if len(text.strip()) > 0:
+                return 'chi_sim'
+            
+            # 默认返回英文
+            return 'eng'
+        except:
+            return 'eng'
+    
     def stop(self):
         self._stop_event.set()
     
     def _get_cache_key(self):
-        # 使用文件内容和配置生成缓存键
-        with open(self.pdf_path, 'rb') as f:
-            file_hash = hashlib.md5(f.read()).hexdigest()
+        # 使用文件路径和修改时间生成缓存键
+        file_mtime = os.path.getmtime(self.pdf_path)
+        file_info = f"{self.pdf_path}_{file_mtime}"
         config_hash = hashlib.md5(json.dumps(self.config, sort_keys=True).encode()).hexdigest()
-        return f"{file_hash}_{config_hash}"
+        return f"{hashlib.md5(file_info.encode()).hexdigest()}_{config_hash}"
     
     def _get_cached_result(self, cache_key):
-        cache_dir = os.path.join(os.path.dirname(self.pdf_path), '.ocr_cache')
+        # 使用配置的缓存目录
+        settings = QSettings("PDF_OCR", "CacheSettings")
+        cache_dir = settings.value("cache_path", os.path.join(os.path.expanduser('~'), '.pdfocr_cache'))
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, f"{cache_key}.txt")
         
@@ -364,7 +505,9 @@ class OCRWorker(QRunnable):
         return None
     
     def _cache_result(self, cache_key, result):
-        cache_dir = os.path.join(os.path.dirname(self.pdf_path), '.ocr_cache')
+        # 使用配置的缓存目录
+        settings = QSettings("PDF_OCR", "CacheSettings")
+        cache_dir = settings.value("cache_path", os.path.join(os.path.expanduser('~'), '.pdfocr_cache'))
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, f"{cache_key}.txt")
         
@@ -376,11 +519,241 @@ class OCRSignals(QObject):
     progress = pyqtSignal(int)
     finished = pyqtSignal(str)
 
+class CacheSettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("缓存设置")
+        self.setModal(True)
+        
+        # 加载设置
+        self.settings = QSettings("PDF_OCR", "CacheSettings")
+        self.default_cache_path = os.path.join(os.path.expanduser('~'), '.pdfocr_cache')
+        self.cache_path = self.settings.value("cache_path", self.default_cache_path)
+        
+        layout = QVBoxLayout()
+        
+        # 缓存信息组
+        info_group = QGroupBox("缓存信息")
+        info_layout = QVBoxLayout()
+        
+        # 缓存路径设置
+        path_layout = QHBoxLayout()
+        self.cache_path_label = QLabel(self.cache_path)
+        self.change_path_button = QPushButton("更改路径")
+        self.change_path_button.clicked.connect(self.change_cache_path)
+        self.reset_path_button = QPushButton("恢复默认")
+        self.reset_path_button.clicked.connect(self.reset_cache_path)
+        path_layout.addWidget(QLabel("缓存路径:"))
+        path_layout.addWidget(self.cache_path_label)
+        path_layout.addWidget(self.change_path_button)
+        path_layout.addWidget(self.reset_path_button)
+        info_layout.addLayout(path_layout)
+        
+        # 缓存大小
+        self.cache_size_label = QLabel()
+        info_layout.addWidget(QLabel("缓存大小:"))
+        info_layout.addWidget(self.cache_size_label)
+        
+        info_group.setLayout(info_layout)
+        
+        # 操作按钮组
+        button_group = QGroupBox("操作")
+        button_layout = QVBoxLayout()
+        
+        # 打开缓存文件夹按钮
+        self.open_folder_button = QPushButton("打开缓存文件夹")
+        self.open_folder_button.clicked.connect(self.open_cache_folder)
+        
+        # 清除缓存按钮
+        self.clear_cache_button = QPushButton("清除缓存")
+        self.clear_cache_button.clicked.connect(self.clear_cache)
+        
+        button_layout.addWidget(self.open_folder_button)
+        button_layout.addWidget(self.clear_cache_button)
+        button_group.setLayout(button_layout)
+        
+        # 添加所有组到主布局
+        layout.addWidget(info_group)
+        layout.addWidget(button_group)
+        
+        # 添加关闭按钮
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+        
+        self.setLayout(layout)
+        
+        # 更新缓存信息
+        self.update_cache_info()
+    
+    def change_cache_path(self):
+        """更改缓存路径"""
+        new_path = QFileDialog.getExistingDirectory(
+            self,
+            "选择缓存目录",
+            self.cache_path,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        
+        if new_path:
+            # 检查新路径是否可写
+            test_file = os.path.join(new_path, '.test')
+            try:
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"无法写入选择的目录：\n{str(e)}\n请选择其他目录。"
+                )
+                return
+            
+            # 如果旧路径存在，询问是否移动现有缓存
+            if os.path.exists(self.cache_path) and os.listdir(self.cache_path):
+                reply = QMessageBox.question(
+                    self,
+                    "移动缓存",
+                    "是否将现有缓存文件移动到新位置？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    try:
+                        # 创建新目录
+                        os.makedirs(new_path, exist_ok=True)
+                        
+                        # 移动文件
+                        for file in os.listdir(self.cache_path):
+                            src = os.path.join(self.cache_path, file)
+                            dst = os.path.join(new_path, file)
+                            shutil.move(src, dst)
+                        
+                        # 删除旧目录
+                        if not os.listdir(self.cache_path):
+                            os.rmdir(self.cache_path)
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self,
+                            "错误",
+                            f"移动缓存文件时出错：\n{str(e)}"
+                        )
+                        return
+            
+            # 更新路径
+            self.cache_path = new_path
+            self.cache_path_label.setText(self.cache_path)
+            
+            # 保存设置
+            self.settings.setValue("cache_path", self.cache_path)
+            
+            # 更新缓存信息
+            self.update_cache_info()
+    
+    def reset_cache_path(self):
+        """恢复默认缓存路径"""
+        reply = QMessageBox.question(
+            self,
+            "确认恢复默认",
+            "确定要恢复默认缓存路径吗？\n当前缓存文件将不会被移动。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # 更新路径
+            self.cache_path = self.default_cache_path
+            self.cache_path_label.setText(self.cache_path)
+            
+            # 保存设置
+            self.settings.setValue("cache_path", self.cache_path)
+            
+            # 更新缓存信息
+            self.update_cache_info()
+            
+            QMessageBox.information(
+                self,
+                "恢复完成",
+                "已恢复默认缓存路径"
+            )
+    
+    def update_cache_info(self):
+        """更新缓存信息显示"""
+        if os.path.exists(self.cache_path):
+            # 计算缓存大小
+            total_size = 0
+            for root, dirs, files in os.walk(self.cache_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    total_size += os.path.getsize(file_path)
+            
+            # 格式化显示大小
+            if total_size < 1024:
+                size_str = f"{total_size} 字节"
+            elif total_size < 1024 * 1024:
+                size_str = f"{total_size/1024:.2f} KB"
+            else:
+                size_str = f"{total_size/1024/1024:.2f} MB"
+            
+            self.cache_size_label.setText(size_str)
+        else:
+            self.cache_size_label.setText("0 字节")
+    
+    def open_cache_folder(self):
+        """打开缓存文件夹"""
+        if os.path.exists(self.cache_path):
+            os.startfile(self.cache_path)
+        else:
+            QMessageBox.information(self, "提示", "暂无缓存文件夹")
+    
+    def clear_cache(self):
+        """清除所有缓存文件"""
+        reply = QMessageBox.question(
+            self,
+            "确认清除缓存",
+            "确定要清除所有OCR缓存文件吗？\n这将删除所有已保存的识别结果。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                if os.path.exists(self.cache_path):
+                    # 删除所有缓存文件
+                    deleted_count = 0
+                    for file in os.listdir(self.cache_path):
+                        file_path = os.path.join(self.cache_path, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            deleted_count += 1
+                    
+                    QMessageBox.information(
+                        self,
+                        "清除完成",
+                        f"已清除 {deleted_count} 个缓存文件"
+                    )
+                    
+                    # 更新缓存信息
+                    self.update_cache_info()
+                else:
+                    QMessageBox.information(self, "提示", "暂无缓存文件")
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "清除失败",
+                    f"清除缓存时发生错误：\n{str(e)}"
+                )
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PDF OCR识别工具")
-        self.setGeometry(100, 100, 1200, 800)
+        
+        # 加载设置
+        self.settings = QSettings("PDF_OCR", "Settings")
+        self.load_settings()
         
         # 创建主窗口部件
         main_widget = QWidget()
@@ -389,27 +762,60 @@ class MainWindow(QMainWindow):
         
         # 添加线程池
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(4)  # 最大4个线程
+        self.thread_pool.setMaxThreadCount(4)
         
         # 创建信号对象
         self.signals = OCRSignals()
         
-        # 创建左侧面板（历史记录）
+        # 创建左侧面板（历史记录和最近文件）
         left_panel = QWidget()
         left_layout = QVBoxLayout()
+        
+        # 创建选项卡
+        self.tab_widget = QTabWidget()
+        
+        # 历史记录标签页
+        history_tab = QWidget()
+        history_layout = QVBoxLayout()
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.load_history_item)
-        self.history_list.setMinimumWidth(300)  # 设置最小宽度
-        self.history_list.setMaximumWidth(400)  # 设置最大宽度
-        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)  # 启用右键菜单
-        self.history_list.customContextMenuRequested.connect(self.show_history_context_menu)  # 连接右键菜单信号
-        left_layout.addWidget(QLabel("历史记录"))
-        left_layout.addWidget(self.history_list)
+        self.history_list.setMinimumWidth(300)
+        self.history_list.setMaximumWidth(400)
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self.show_history_context_menu)
+        history_layout.addWidget(self.history_list)
+        history_tab.setLayout(history_layout)
+        
+        # 最近文件标签页
+        recent_tab = QWidget()
+        recent_layout = QVBoxLayout()
+        self.recent_list = QListWidget()
+        self.recent_list.itemClicked.connect(self.load_recent_file)
+        self.recent_list.setMinimumWidth(300)
+        self.recent_list.setMaximumWidth(400)
+        self.recent_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.recent_list.customContextMenuRequested.connect(self.show_recent_context_menu)
+        recent_layout.addWidget(self.recent_list)
+        recent_tab.setLayout(recent_layout)
+        
+        # 添加选项卡
+        self.tab_widget.addTab(history_tab, "历史记录")
+        self.tab_widget.addTab(recent_tab, "最近文件")
+        
+        left_layout.addWidget(self.tab_widget)
         left_panel.setLayout(left_layout)
         
         # 创建右侧面板（主功能）
         right_panel = QWidget()
         right_layout = QVBoxLayout()
+        
+        # 创建主题切换按钮
+        theme_layout = QHBoxLayout()
+        self.theme_button = QPushButton("切换主题")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        theme_layout.addWidget(self.theme_button)
+        theme_layout.addStretch()
+        right_layout.addLayout(theme_layout)
         
         # 创建水平布局用于按钮
         button_layout = QHBoxLayout()
@@ -442,6 +848,10 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_ocr)
         self.cancel_button.setEnabled(False)
         
+        # 添加缓存设置按钮
+        self.cache_settings_button = QPushButton("缓存设置")
+        self.cache_settings_button.clicked.connect(self.show_cache_settings)
+        
         # 添加按钮到水平布局
         button_layout.addWidget(self.select_button)
         button_layout.addWidget(self.select_multiple_button)
@@ -450,6 +860,7 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.export_word_button)
         button_layout.addWidget(self.config_button)
         button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.cache_settings_button)
         
         # 创建设置区域
         settings_layout = QHBoxLayout()
@@ -468,13 +879,6 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(QLabel("DPI:"))
         settings_layout.addWidget(self.dpi_spin)
         
-        # 添加主题设置
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["浅色", "深色"])
-        self.theme_combo.currentTextChanged.connect(self.change_theme)
-        settings_layout.addWidget(QLabel("主题:"))
-        settings_layout.addWidget(self.theme_combo)
-        
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         
@@ -486,7 +890,7 @@ class MainWindow(QMainWindow):
         
         # 创建结果显示区域
         self.result_text = QTextEdit()
-        self.result_text.setReadOnly(False)  # 允许编辑以进行校对
+        self.result_text.setReadOnly(False)
         
         # 添加校对按钮
         self.proofread_button = QPushButton("校对文本")
@@ -521,7 +925,9 @@ class MainWindow(QMainWindow):
         self.ocr_thread = None
         self.current_theme = "浅色"
         self.history = []
+        self.recent_files = []
         self.load_history()
+        self.load_recent_files()
         
         # 启用拖放
         self.setAcceptDrops(True)
@@ -536,11 +942,13 @@ class MainWindow(QMainWindow):
             self.result_text.setText(error_msg)
         
         self.ocr_config = {
-            'oem': 3,
-            'psm': 6,
-            'dpi': 600,
+            'language': '中文 (chi_sim)',
+            'oem': 1,  # 使用LSTM模式，速度更快
+            'psm': 3,  # 全自动页面分割，无方向检测
+            'dpi': 300,  # 降低DPI以提高速度
             'contrast': 1.0,
-            'brightness': 1.0
+            'brightness': 1.0,
+            'sharpen': 1.0
         }
         
         # 连接信号
@@ -548,6 +956,109 @@ class MainWindow(QMainWindow):
         self.signals.progress.connect(self._update_progress)
         self.signals.finished.connect(self._ocr_finished)
         
+        # 创建系统托盘图标
+        self.create_tray_icon()
+    
+    def load_settings(self):
+        # 加载窗口大小和位置
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            self.setGeometry(100, 100, 1200, 800)
+        
+        # 加载主题设置
+        self.current_theme = self.settings.value("theme", "浅色")
+        self.apply_theme()
+    
+    def save_settings(self):
+        # 保存窗口大小和位置
+        self.settings.setValue("geometry", self.saveGeometry())
+        # 保存主题设置
+        self.settings.setValue("theme", self.current_theme)
+    
+    def apply_theme(self):
+        if self.current_theme == "深色":
+            self.setStyleSheet("""
+                QMainWindow, QWidget {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QPushButton {
+                    background-color: #3c3f41;
+                    color: #ffffff;
+                    border: 1px solid #555555;
+                }
+                QPushButton:hover {
+                    background-color: #4c4f51;
+                }
+                QTextEdit {
+                    background-color: #323232;
+                    color: #ffffff;
+                }
+                QComboBox, QSpinBox {
+                    background-color: #3c3f41;
+                    color: #ffffff;
+                }
+                QListWidget {
+                    background-color: #323232;
+                    color: #ffffff;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #555555;
+                    background-color: #2b2b2b;
+                }
+                QTabBar::tab {
+                    background-color: #3c3f41;
+                    color: #ffffff;
+                    border: 1px solid #555555;
+                    padding: 8px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #4c4f51;
+                }
+            """)
+        else:
+            self.setStyleSheet("")
+    
+    def toggle_theme(self):
+        self.current_theme = "深色" if self.current_theme == "浅色" else "浅色"
+        self.apply_theme()
+        self.save_settings()
+    
+    def create_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        # 使用系统默认图标
+        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        
+        # 创建托盘菜单
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("显示")
+        show_action.triggered.connect(self.show)
+        quit_action = tray_menu.addAction("退出")
+        quit_action.triggered.connect(QApplication.quit)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        # 添加双击显示功能
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+    
+    def tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.show()
+            self.activateWindow()
+    
+    def closeEvent(self, event):
+        # 保存设置
+        self.save_settings()
+        # 最小化到托盘
+        if self.tray_icon.isVisible():
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
+    
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -802,6 +1313,9 @@ class MainWindow(QMainWindow):
         self.log_text.clear()
         
         self.current_pdf_path = pdf_path
+        # 添加到最近文件列表
+        self.add_to_recent(pdf_path)
+        
         self.current_worker = OCRWorker(
             pdf_path,
             self.ocr_config,
@@ -825,6 +1339,7 @@ class MainWindow(QMainWindow):
         # 创建右键菜单
         menu = QMenu()
         delete_action = menu.addAction("删除")
+        clear_all_action = menu.addAction("清空所有")
         
         # 获取右键点击的项目
         item = self.history_list.itemAt(position)
@@ -833,6 +1348,13 @@ class MainWindow(QMainWindow):
             action = menu.exec_(self.history_list.mapToGlobal(position))
             if action == delete_action:
                 self.delete_history_item(item)
+            elif action == clear_all_action:
+                self.clear_all_history()
+        else:
+            # 如果没有选中项目，只显示清空所有选项
+            action = menu.exec_(self.history_list.mapToGlobal(position))
+            if action == clear_all_action:
+                self.clear_all_history()
     
     def delete_history_item(self, item):
         # 获取要删除的项目的索引
@@ -843,6 +1365,92 @@ class MainWindow(QMainWindow):
         self.save_history()
         # 更新历史记录列表显示
         self.update_history_list()
+    
+    def clear_all_history(self):
+        reply = QMessageBox.question(self, '确认', '确定要清空所有历史记录吗？',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.history = []
+            self.save_history()
+            self.update_history_list()
+    
+    def load_recent_files(self):
+        try:
+            with open('recent_files.json', 'r', encoding='utf-8') as f:
+                self.recent_files = json.load(f)
+                self.update_recent_list()
+        except FileNotFoundError:
+            self.recent_files = []
+    
+    def save_recent_files(self):
+        with open('recent_files.json', 'w', encoding='utf-8') as f:
+            json.dump(self.recent_files, f, ensure_ascii=False, indent=2)
+    
+    def update_recent_list(self):
+        self.recent_list.clear()
+        for file_path in reversed(self.recent_files):
+            if os.path.exists(file_path):
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                file_size_str = f"{file_size/1024:.1f}KB" if file_size < 1024*1024 else f"{file_size/1024/1024:.1f}MB"
+                self.recent_list.addItem(f"📄 {file_name}\n📊 {file_size_str}")
+    
+    def add_to_recent(self, file_path):
+        if file_path in self.recent_files:
+            self.recent_files.remove(file_path)
+        self.recent_files.insert(0, file_path)
+        # 限制最近文件数量
+        if len(self.recent_files) > 10:
+            self.recent_files = self.recent_files[:10]
+        self.save_recent_files()
+        self.update_recent_list()
+    
+    def load_recent_file(self, item):
+        index = self.recent_list.row(item)
+        file_path = self.recent_files[-(index + 1)]
+        if os.path.exists(file_path):
+            self.start_ocr(file_path)
+        else:
+            QMessageBox.warning(self, "警告", "文件不存在")
+            self.recent_files.remove(file_path)
+            self.save_recent_files()
+            self.update_recent_list()
+    
+    def show_recent_context_menu(self, position):
+        menu = QMenu()
+        delete_action = menu.addAction("删除")
+        clear_all_action = menu.addAction("清空所有")
+        
+        item = self.recent_list.itemAt(position)
+        if item:
+            action = menu.exec_(self.recent_list.mapToGlobal(position))
+            if action == delete_action:
+                self.delete_recent_item(item)
+            elif action == clear_all_action:
+                self.clear_all_recent()
+        else:
+            action = menu.exec_(self.recent_list.mapToGlobal(position))
+            if action == clear_all_action:
+                self.clear_all_recent()
+    
+    def delete_recent_item(self, item):
+        index = self.recent_list.row(item)
+        del self.recent_files[-(index + 1)]
+        self.save_recent_files()
+        self.update_recent_list()
+    
+    def clear_all_recent(self):
+        reply = QMessageBox.question(self, '确认', '确定要清空所有最近文件吗？',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.recent_files = []
+            self.save_recent_files()
+            self.update_recent_list()
+    
+    def show_cache_settings(self):
+        """显示缓存设置对话框"""
+        dialog = CacheSettingsDialog(self)
+        dialog.exec_()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
