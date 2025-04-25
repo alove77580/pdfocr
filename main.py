@@ -9,7 +9,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, 
                            QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
                            QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
-                           QDialogButtonBox, QFontComboBox, QListWidget, QSplitter)
+                           QDialogButtonBox, QFontComboBox, QListWidget, QSplitter, QMenu)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QThreadPool, QRunnable, QMetaObject, Q_ARG, QObject
 from PyQt5.QtGui import QClipboard, QDragEnterEvent, QDropEvent
 from pdf2image import convert_from_path
@@ -399,10 +399,13 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout()
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.load_history_item)
+        self.history_list.setMinimumWidth(300)  # 设置最小宽度
+        self.history_list.setMaximumWidth(400)  # 设置最大宽度
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)  # 启用右键菜单
+        self.history_list.customContextMenuRequested.connect(self.show_history_context_menu)  # 连接右键菜单信号
         left_layout.addWidget(QLabel("历史记录"))
         left_layout.addWidget(self.history_list)
         left_panel.setLayout(left_layout)
-        left_panel.setMaximumWidth(200)
         
         # 创建右侧面板（主功能）
         right_panel = QWidget()
@@ -573,12 +576,29 @@ class MainWindow(QMainWindow):
     def update_history_list(self):
         self.history_list.clear()
         for item in reversed(self.history):
-            self.history_list.addItem(f"{item['time']} - {item['filename']}")
+            # 获取文件大小
+            file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), item['filename'])
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_str = f"{file_size/1024:.1f}KB" if file_size < 1024*1024 else f"{file_size/1024/1024:.1f}MB"
+            
+            # 获取文本统计信息
+            text = item['result']
+            lines = len(text.split('\n'))
+            words = sum(len(line.split()) for line in text.split('\n'))
+            chars = len(text)
+            
+            # 格式化显示
+            display_text = (
+                f"📄 {item['filename']}\n"
+                f"⏰ {item['time']}\n"
+                f"📊 {file_size_str} | {lines}行 | {words}字 | {chars}字符"
+            )
+            self.history_list.addItem(display_text)
     
     def add_to_history(self, filename, result):
         history_item = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'filename': os.path.basename(filename),
+            'filename': filename,  # 保存完整路径
             'result': result
         }
         self.history.append(history_item)
@@ -800,6 +820,29 @@ class MainWindow(QMainWindow):
             self.config_button.setEnabled(True)
             self.progress_bar.setVisible(False)
             self.log_text.append("处理已取消")
+    
+    def show_history_context_menu(self, position):
+        # 创建右键菜单
+        menu = QMenu()
+        delete_action = menu.addAction("删除")
+        
+        # 获取右键点击的项目
+        item = self.history_list.itemAt(position)
+        if item:
+            # 执行删除操作
+            action = menu.exec_(self.history_list.mapToGlobal(position))
+            if action == delete_action:
+                self.delete_history_item(item)
+    
+    def delete_history_item(self, item):
+        # 获取要删除的项目的索引
+        index = self.history_list.row(item)
+        # 从历史记录中删除
+        del self.history[-(index + 1)]
+        # 保存更新后的历史记录
+        self.save_history()
+        # 更新历史记录列表显示
+        self.update_history_list()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
