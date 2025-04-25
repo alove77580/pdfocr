@@ -751,10 +751,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("PDF OCR识别工具")
         
-        # 加载设置
-        self.settings = QSettings("PDF_OCR", "Settings")
-        self.load_settings()
-        
         # 创建主窗口部件
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -871,13 +867,14 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(QLabel("输出格式:"))
         settings_layout.addWidget(self.format_combo)
         
-        # 添加DPI设置
-        self.dpi_spin = QSpinBox()
-        self.dpi_spin.setRange(300, 1200)
-        self.dpi_spin.setValue(600)
-        self.dpi_spin.setSingleStep(100)
-        settings_layout.addWidget(QLabel("DPI:"))
-        settings_layout.addWidget(self.dpi_spin)
+        # 添加字体大小设置
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 24)
+        self.font_size_spin.setValue(12)
+        self.font_size_spin.setSingleStep(1)
+        self.font_size_spin.valueChanged.connect(self.update_font_size)
+        settings_layout.addWidget(QLabel("字体大小:"))
+        settings_layout.addWidget(self.font_size_spin)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -885,12 +882,23 @@ class MainWindow(QMainWindow):
         # 创建日志显示区域
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(100)
-        self.log_text.setStyleSheet("background-color: #f0f0f0;")
+        self.log_text.setMinimumHeight(200)
+        self.log_text.setMaximumHeight(300)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #f0f0f0;
+                font-family: 'Consolas', 'Courier New', monospace;
+            }
+        """)
         
         # 创建结果显示区域
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(False)
+        self.result_text.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Consolas', 'Courier New', monospace;
+            }
+        """)
         
         # 添加校对按钮
         self.proofread_button = QPushButton("校对文本")
@@ -926,6 +934,11 @@ class MainWindow(QMainWindow):
         self.current_theme = "浅色"
         self.history = []
         self.recent_files = []
+        
+        # 加载设置
+        self.settings = QSettings("PDF_OCR", "Settings")
+        self.load_settings()
+        
         self.load_history()
         self.load_recent_files()
         
@@ -970,6 +983,11 @@ class MainWindow(QMainWindow):
         # 加载主题设置
         self.current_theme = self.settings.value("theme", "浅色")
         self.apply_theme()
+        
+        # 加载字体大小设置
+        font_size = self.settings.value("font_size", 12, type=int)
+        self.font_size_spin.setValue(font_size)
+        self.update_font_size(font_size)
     
     def save_settings(self):
         # 保存窗口大小和位置
@@ -1175,6 +1193,8 @@ class MainWindow(QMainWindow):
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
+        # 确保日志窗口可见
+        self.log_text.setVisible(True)
     
     def _update_progress(self, value):
         self.progress_bar.setValue(value)
@@ -1451,6 +1471,30 @@ class MainWindow(QMainWindow):
         """显示缓存设置对话框"""
         dialog = CacheSettingsDialog(self)
         dialog.exec_()
+    
+    def update_font_size(self, size):
+        """更新字体大小"""
+        # 更新日志窗口字体
+        self.log_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #f0f0f0;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: {size}px;
+                line-height: 1.5;
+            }}
+        """)
+        
+        # 更新结果窗口字体
+        self.result_text.setStyleSheet(f"""
+            QTextEdit {{
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: {size}px;
+                line-height: 1.5;
+            }}
+        """)
+        
+        # 保存字体大小设置
+        self.settings.setValue("font_size", size)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
