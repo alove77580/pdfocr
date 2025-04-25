@@ -58,6 +58,18 @@ def build_exe():
         tessdata_dst = os.path.join('tesseract', 'tessdata')
         if os.path.exists(tessdata_src):
             copy_directory(tessdata_src, tessdata_dst)
+            
+            # 检查必要的语言文件是否存在
+            required_lang_files = ['chi_sim.traineddata', 'eng.traineddata', 'equ.traineddata']
+            for lang_file in required_lang_files:
+                src_file = os.path.join(tessdata_src, lang_file)
+                dst_file = os.path.join(tessdata_dst, lang_file)
+                if not os.path.exists(dst_file):
+                    if os.path.exists(src_file):
+                        shutil.copy2(src_file, dst_file)
+                        print(f"已复制语言文件: {lang_file}")
+                    else:
+                        print(f"警告: 找不到语言文件 {lang_file}")
         
         # 复制Tesseract的DLL文件
         tesseract_dlls = [

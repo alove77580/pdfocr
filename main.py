@@ -44,6 +44,32 @@ def get_tesseract_path():
     
     return None
 
+def get_tessdata_path():
+    # 首先检查打包后的路径
+    tessdata_path = get_resource_path('tessdata')
+    if os.path.exists(tessdata_path):
+        return tessdata_path
+    
+    # 检查Tesseract安装目录下的tessdata
+    tesseract_path = get_tesseract_path()
+    if tesseract_path:
+        tessdata_path = os.path.join(os.path.dirname(tesseract_path), 'tessdata')
+        if os.path.exists(tessdata_path):
+            return tessdata_path
+    
+    # 检查常见安装路径
+    common_paths = [
+        r'D:\Program Files\Tesseract-OCR\tessdata',
+        r'C:\Program Files\Tesseract-OCR\tessdata',
+        r'C:\Program Files (x86)\Tesseract-OCR\tessdata'
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
+    return None
+
 def get_poppler_path():
     # 首先检查打包后的路径
     poppler_path = get_resource_path('poppler')
@@ -80,13 +106,16 @@ def check_dependencies():
         errors.append("找不到Tesseract-OCR")
     else:
         # 检查tessdata目录
-        tessdata_dir = os.path.join(os.path.dirname(tesseract_path), 'tessdata')
-        if not os.path.exists(tessdata_dir):
+        tessdata_path = get_tessdata_path()
+        if not tessdata_path:
             errors.append("找不到tessdata目录")
         else:
+            # 设置TESSDATA_PREFIX环境变量
+            os.environ['TESSDATA_PREFIX'] = tessdata_path
+            
             # 检查语言文件
-            for lang in ['chi_sim.traineddata', 'eng.traineddata', 'equ.traineddata']:  # 添加公式识别支持
-                lang_path = os.path.join(tessdata_dir, lang)
+            for lang in ['chi_sim.traineddata', 'eng.traineddata', 'equ.traineddata']:
+                lang_path = os.path.join(tessdata_path, lang)
                 if not os.path.exists(lang_path):
                     errors.append(f"找不到语言文件: {lang}")
         
@@ -150,7 +179,7 @@ class OCRThread(QThread):
                 images = convert_from_path(
                     self.pdf_path,
                     poppler_path=poppler_path,
-                    dpi=300  # 提高DPI以获得更好的图像质量
+                    dpi=600  # 提高DPI以获得更好的图像质量
                 )
                 self.log.emit(f"PDF转换完成，共{len(images)}页")
             except Exception as e:
@@ -162,7 +191,24 @@ class OCRThread(QThread):
             result_text = ""
             
             # 配置Tesseract参数
-            custom_config = r'--oem 3 --psm 6 -l chi_sim+eng+equ'  # 使用LSTM引擎，自动页面分割，支持中文、英文和公式
+            tessdata_path = get_tessdata_path()
+            if not tessdata_path:
+                raise Exception("找不到tessdata目录")
+            
+            # 设置TESSDATA_PREFIX环境变量
+            os.environ['TESSDATA_PREFIX'] = tessdata_path
+            self.log.emit(f"TESSDATA_PREFIX设置为: {tessdata_path}")
+            
+            # 检查语言文件是否存在
+            for lang in ['chi_sim.traineddata', 'eng.traineddata', 'equ.traineddata']:
+                lang_path = os.path.join(tessdata_path, lang)
+                if not os.path.exists(lang_path):
+                    raise Exception(f"找不到语言文件: {lang}")
+                self.log.emit(f"找到语言文件: {lang}")
+            
+            # 配置Tesseract参数
+            # 使用数学公式专用配置
+            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-=()[]{}<>/\^_.,:;!?'
             
             # 对每一页进行OCR
             for i, image in enumerate(images):
@@ -177,7 +223,26 @@ class OCRThread(QThread):
                     # 增强对比度
                     from PIL import ImageEnhance
                     enhancer = ImageEnhance.Contrast(image)
-                    image = enhancer.enhance(1.5)  # 增加对比度
+                    image = enhancer.enhance(2.0)  # 增加对比度
+                    
+                    # 数学公式专用预处理
+                    # 1. 二值化处理
+                    from PIL import ImageOps
+                    image = ImageOps.autocontrast(image, cutoff=5)
+                    
+                    # 2. 降噪处理
+                    from PIL import ImageFilter
+                    image = image.filter(ImageFilter.MedianFilter(size=5))
+                    
+                    # 3. 锐化处理
+                    image = image.filter(ImageFilter.SHARPEN)
+                    
+                    # 4. 调整大小（如果需要）
+                    width, height = image.size
+                    if width < 2000 or height < 2000:
+                        new_width = max(width, 2000)
+                        new_height = max(height, 2000)
+                        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     
                     # 进行OCR识别
                     text = pytesseract.image_to_string(
