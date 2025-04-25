@@ -151,8 +151,6 @@ def build_exe():
         shutil.rmtree('tesseract')
     if os.path.exists('poppler'):
         shutil.rmtree('poppler')
-    if os.path.exists('PDF_OCR_Tool.spec'):
-        os.remove('PDF_OCR_Tool.spec')
 
 if __name__ == '__main__':
     build_exe() 
