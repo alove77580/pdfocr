@@ -1,23 +1,24 @@
-import sys
+import hashlib
+import json
 import os
 import shutil
-import json
-import hashlib
+import sys
 import threading
 import time
-from datetime import datetime
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, 
-                           QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
-                           QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
-                           QDialogButtonBox, QFontComboBox, QListWidget, QSplitter, QMenu,
-                           QSystemTrayIcon, QAction, QTabWidget, QStyle, QGroupBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QThreadPool, QRunnable, QMetaObject, Q_ARG, QObject, QSettings
-from PyQt5.QtGui import QClipboard, QDragEnterEvent, QDropEvent, QIcon
-from pdf2image import convert_from_path
-import pytesseract
-from PIL import Image
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import pytesseract
+from PyQt5.QtCore import Qt, pyqtSignal, QThreadPool, QRunnable, QObject, QSettings
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
+                             QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
+                             QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
+                             QDialogButtonBox, QListWidget, QSplitter, QMenu,
+                             QSystemTrayIcon, QTabWidget, QStyle, QGroupBox)
+from pdf2image import convert_from_path
+
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -267,6 +268,21 @@ class OCRConfigDialog(QDialog):
         sharpen_layout.addWidget(self.sharpen_label)
         self.sharpen_slider.valueChanged.connect(
             lambda v: self.sharpen_label.setText(f"{v}%"))
+
+        # 识别来源
+        source_group = QGroupBox("识别来源")
+        source_layout = QVBoxLayout()
+        self.source_combo = QComboBox()
+        self.source_combo.addItems([
+            "本地OCR (Tesseract)",
+            "百度OCR (在线)"
+        ])
+        source_layout.addWidget(QLabel("选择识别方式:"))
+        source_layout.addWidget(self.source_combo)
+        source_group.setLayout(source_layout)
+
+        # 添加到主布局
+        layout.addWidget(source_group)
         
         preprocess_layout.addLayout(contrast_layout)
         preprocess_layout.addLayout(brightness_layout)
@@ -290,6 +306,7 @@ class OCRConfigDialog(QDialog):
     
     def get_config(self):
         return {
+            'source': self.source_combo.currentText(),
             'language': self.language_combo.currentText(),
             'oem': self.oem_combo.currentIndex(),
             'psm': self.psm_combo.currentIndex(),
@@ -298,6 +315,42 @@ class OCRConfigDialog(QDialog):
             'brightness': self.brightness_slider.value() / 100.0,
             'sharpen': self.sharpen_slider.value() / 100.0
         }
+
+class BaiduAPISettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("百度OCR API设置")
+        self.setModal(True)
+        self.settings = QSettings("PDF_OCR", "BaiduAPI")
+
+        layout = QVBoxLayout()
+
+        self.app_id_input = QTextEdit(self.settings.value("app_id", ""))
+        self.api_key_input = QTextEdit(self.settings.value("api_key", ""))
+        self.secret_key_input = QTextEdit(self.settings.value("secret_key", ""))
+
+        for widget, label in [
+            (self.app_id_input, "App ID"),
+            (self.api_key_input, "API Key"),
+            (self.secret_key_input, "Secret Key")
+        ]:
+            layout.addWidget(QLabel(label))
+            widget.setFixedHeight(30)
+            layout.addWidget(widget)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.save_settings)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def save_settings(self):
+        self.settings.setValue("app_id", self.app_id_input.toPlainText().strip())
+        self.settings.setValue("api_key", self.api_key_input.toPlainText().strip())
+        self.settings.setValue("secret_key", self.secret_key_input.toPlainText().strip())
+        self.accept()
+
 
 class OCRWorker(QRunnable):
     def __init__(self, pdf_path, config, progress_callback, log_callback, finished_callback):
@@ -847,6 +900,10 @@ class MainWindow(QMainWindow):
         # 添加缓存设置按钮
         self.cache_settings_button = QPushButton("缓存设置")
         self.cache_settings_button.clicked.connect(self.show_cache_settings)
+
+        self.api_settings_button = QPushButton("百度API设置")
+        self.api_settings_button.clicked.connect(self.show_baidu_api_settings)
+
         
         # 添加按钮到水平布局
         button_layout.addWidget(self.select_button)
@@ -857,6 +914,7 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.config_button)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.cache_settings_button)
+        button_layout.addWidget(self.api_settings_button)
         
         # 创建设置区域
         settings_layout = QHBoxLayout()
@@ -1471,7 +1529,11 @@ class MainWindow(QMainWindow):
         """显示缓存设置对话框"""
         dialog = CacheSettingsDialog(self)
         dialog.exec_()
-    
+
+    def show_baidu_api_settings(self):
+        dialog = BaiduAPISettingsDialog(self)
+        dialog.exec_()
+
     def update_font_size(self, size):
         """更新字体大小"""
         # 更新日志窗口字体
