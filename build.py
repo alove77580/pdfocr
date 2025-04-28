@@ -136,6 +136,7 @@ def build_exe():
         '--add-data=tesseract;tesseract',
         '--add-data=poppler;poppler',
         '--add-data=assets;assets',
+        '--add-data=assets/icon.ico;.',
         '--hidden-import=PIL._tkinter',
         '--hidden-import=pytesseract',
         '--hidden-import=pdf2image',

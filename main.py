@@ -1079,6 +1079,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PDF OCR识别工具")
         # 设置主窗口图标
         icon_path = get_resource_path('icon.ico')
+        if not os.path.exists(icon_path):
+            icon_path = get_resource_path('assets/icon.ico')
         self.setWindowIcon(QIcon(icon_path))
         
         # 创建主题管理器
@@ -1475,6 +1477,8 @@ class MainWindow(QMainWindow):
         self.tray_icon = QSystemTrayIcon(self)
         # 使用icon.ico作为托盘图标
         icon_path = get_resource_path('icon.ico')
+        if not os.path.exists(icon_path):
+            icon_path = get_resource_path('assets/icon.ico')
         self.tray_icon.setIcon(QIcon(icon_path))
         
         # 创建托盘菜单
