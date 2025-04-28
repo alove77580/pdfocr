@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -6,20 +7,19 @@ import sys
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import io
 
 import pytesseract
+from PIL import Image, ImageEnhance
 from PyQt5.QtCore import Qt, pyqtSignal, QThreadPool, QRunnable, QObject, QSettings
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap, QImage
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
                              QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
                              QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
                              QDialogButtonBox, QListWidget, QSplitter, QMenu,
-                             QSystemTrayIcon, QTabWidget, QStyle, QGroupBox, QLineEdit)
+                             QSystemTrayIcon, QTabWidget, QGroupBox, QLineEdit, QCheckBox,
+                             QRadioButton)
 from pdf2image import convert_from_path
-from PIL import Image, ImageEnhance
 
 
 def get_resource_path(relative_path):
@@ -438,6 +438,7 @@ class OCRWorker(QRunnable):
         self.max_retries = 3
         self.retry_delay = 2  # 秒
         self.cache = {}
+        self.images = []  # 添加images属性
         self.stats = {
             'total_pages': 0,
             'processed_pages': 0,
@@ -486,9 +487,7 @@ class OCRWorker(QRunnable):
             cache_key = self._get_cache_key()
             cached_result = self._get_cached_result(cache_key)
             if cached_result:
-                if not hasattr(self, '_cache_used'):
-                    self.log_callback("使用缓存结果")
-                    self._cache_used = True
+                self.log_callback("使用缓存结果")
                 return cached_result
                 
             # 获取API配置
@@ -577,9 +576,7 @@ class OCRWorker(QRunnable):
             cache_key = self._get_cache_key()
             cached_result = self._get_cached_result(cache_key)
             if cached_result:
-                if not hasattr(self, '_cache_used'):
-                    self.log_callback("使用缓存结果")
-                    self._cache_used = True
+                self.log_callback("使用缓存结果")
                 return cached_result
                 
             # 设置Tesseract路径
@@ -780,19 +777,30 @@ class OCRWorker(QRunnable):
                 if not os.path.exists(pdfinfo_path):
                     raise ValueError(f"找不到pdfinfo工具: {pdfinfo_path}")
                     
+                # 清空之前的图像
+                self.images = []
+                self.log_callback("已清空之前的图像缓存")
+                
+                # 转换PDF为图像
+                self.log_callback("开始转换PDF为图像...")
                 images = convert_from_path(
                     self.pdf_path,
                     poppler_path=poppler_path,
                     dpi=self.config.get('dpi', 300),
                     thread_count=1  # 使用单线程避免并发问题
                 )
-                self.log_callback(f"PDF转换完成，共{len(images)}页")
+                
+                # 保存图像
+                self.images = images
+                self.log_callback(f"PDF转换完成，共{len(self.images)}页")
+                self.log_callback(f"第一页图像类型: {type(images[0]) if images else '无图像'}")
+                
             except Exception as e:
                 self.log_callback(f"PDF转换错误: {str(e)}")
                 self.log_callback(traceback.format_exc())
                 raise Exception(f"PDF转换失败: {str(e)}")
                 
-            total_pages = len(images)
+            total_pages = len(self.images)
             
             # 设置总页数
             self.stats['total_pages'] = total_pages
@@ -807,7 +815,7 @@ class OCRWorker(QRunnable):
             output_path = os.path.splitext(self.pdf_path)[0] + '_ocr.txt'
             result_text = ""
             with open(output_path, 'w', encoding='utf-8') as f:
-                for i, img in enumerate(images):
+                for i, img in enumerate(self.images):
                     try:
                         # 更新进度
                         self.progress_callback(int((i + 1) / total_pages * 100))
@@ -1149,13 +1157,10 @@ class MainWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_text)
         self.copy_button.setEnabled(False)
         
-        self.export_button = QPushButton("导出文本")
-        self.export_button.clicked.connect(self.export_text)
+        # 合并导出按钮
+        self.export_button = QPushButton("导出")
+        self.export_button.clicked.connect(self.show_export_dialog)
         self.export_button.setEnabled(False)
-        
-        self.export_word_button = QPushButton("导出Word")
-        self.export_word_button.clicked.connect(self.export_word)
-        self.export_word_button.setEnabled(False)
         
         # 添加配置按钮
         self.config_button = QPushButton("OCR配置")
@@ -1172,11 +1177,10 @@ class MainWindow(QMainWindow):
 
         self.api_settings_button = QPushButton("百度API设置")
         self.api_settings_button.clicked.connect(self.show_baidu_api_settings)
-        
-        # 添加批量导出按钮
-        self.batch_export_button = QPushButton("批量导出")
-        self.batch_export_button.clicked.connect(self.batch_export)
-        button_layout.addWidget(self.batch_export_button)
+
+        # 添加自动保存设置按钮
+        self.auto_save_button = QPushButton("自动保存设置")
+        self.auto_save_button.clicked.connect(self.show_auto_save_settings)
         
         # 添加校对按钮
         self.proofread_button = QPushButton("文本校对")
@@ -1194,11 +1198,11 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.select_multiple_button)
         button_layout.addWidget(self.copy_button)
         button_layout.addWidget(self.export_button)
-        button_layout.addWidget(self.export_word_button)
         button_layout.addWidget(self.config_button)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.cache_settings_button)
         button_layout.addWidget(self.api_settings_button)
+        button_layout.addWidget(self.auto_save_button)
         
         # 创建设置区域
         settings_layout = QHBoxLayout()
@@ -1286,6 +1290,14 @@ class MainWindow(QMainWindow):
             'contrast': 1.0,
             'brightness': 1.0,
             'sharpen': 1.0
+        })
+        
+        # 加载自动保存设置
+        self.auto_save_config = self.settings.value("auto_save_config", {
+            'enabled': False,
+            'format': 'txt',  # txt, word, pdf
+            'output_dir': os.path.join(os.path.expanduser('~'), 'PDF_OCR_Output'),
+            'auto_create_dir': True
         })
         
         self.load_history()
@@ -1498,17 +1510,46 @@ class MainWindow(QMainWindow):
         self.result_text.setText(history_item['result'])
         self.copy_button.setEnabled(True)
         self.export_button.setEnabled(True)
-        self.export_word_button.setEnabled(True)
         self.proofread_button.setEnabled(True)
     
     def proofread_text(self):
-        """文本校对功能"""
-        if not self.proofread_dialog:
-            self.proofread_dialog = ProofreadDialog(self)
+        """打开文本校对窗口"""
+        try:
+            self.signals.log.emit("开始准备文本校对...")
             
-        self.proofread_dialog.set_text(self.result_text.toPlainText())
-        if self.proofread_dialog.exec_() == QDialog.Accepted:
-            self.result_text.setText(self.proofread_dialog.get_text())
+            if not hasattr(self, 'current_result') or not self.current_result:
+                self.signals.log.emit("错误：没有可校对的文本")
+                QMessageBox.warning(self, "错误", "没有可校对的文本")
+                return
+                
+            if not hasattr(self, 'images') or not self.images:
+                self.signals.log.emit("错误：没有可用的图像")
+                QMessageBox.warning(self, "错误", "没有可用的图像")
+                return
+                
+            self.signals.log.emit("创建校对对话框...")
+            dialog = ProofreadDialog(self)
+            
+            self.signals.log.emit("设置校对文本...")
+            dialog.set_text(self.current_result)
+            
+            self.signals.log.emit("设置校对图像...")
+            dialog.set_images(self.images)
+            
+            self.signals.log.emit("显示校对对话框...")
+            if dialog.exec_() == QDialog.Accepted:
+                self.signals.log.emit("保存校对结果...")
+                self.current_result = dialog.get_text()
+                self.text_edit.setText(self.current_result)
+                self.signals.log.emit("校对完成")
+            else:
+                self.signals.log.emit("取消校对")
+                
+        except Exception as e:
+            self.signals.log.emit(f"校对过程中出错: {str(e)}")
+            print(f"校对过程中出错: {str(e)}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"校对过程中出错: {str(e)}")
     
     def export_word(self):
         try:
@@ -1578,7 +1619,6 @@ class MainWindow(QMainWindow):
         self.select_multiple_button.setEnabled(True)
         self.copy_button.setEnabled(True)
         self.export_button.setEnabled(True)
-        self.export_word_button.setEnabled(True)
         self.proofread_button.setEnabled(True)
         self.config_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -1590,6 +1630,8 @@ class MainWindow(QMainWindow):
         # 添加到历史记录
         if hasattr(self, 'current_pdf_path'):
             self.add_to_history(self.current_pdf_path, result)
+            # 自动保存结果
+            self.auto_save_result(result, self.current_pdf_path)
     
     def change_theme(self, theme):
         if theme == "深色" and self.current_theme == "浅色":
@@ -1696,7 +1738,6 @@ class MainWindow(QMainWindow):
         self.select_multiple_button.setEnabled(False)
         self.copy_button.setEnabled(False)
         self.export_button.setEnabled(False)
-        self.export_word_button.setEnabled(False)
         self.proofread_button.setEnabled(False)
         self.config_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -2006,18 +2047,295 @@ class MainWindow(QMainWindow):
         self.stats_labels['chars'].setText(f"字符数: {stats['chars']}")
         self.stats_labels['confidence'].setText(f"置信度: {stats['confidence']}")
 
+    def show_auto_save_settings(self):
+        """显示自动保存设置对话框"""
+        dialog = AutoSaveSettingsDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.auto_save_config = dialog.get_config()
+            self.settings.setValue("auto_save_config", self.auto_save_config)
+            self.log_text.append("自动保存设置已更新并保存")
+
+    def auto_save_result(self, result, pdf_path):
+        """自动保存OCR结果"""
+        if not self.auto_save_config['enabled']:
+            return
+            
+        try:
+            # 确保输出目录存在
+            output_dir = self.auto_save_config['output_dir']
+            if self.auto_save_config['auto_create_dir'] and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                
+            # 生成输出文件名
+            base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+            output_path = os.path.join(output_dir, f"{base_name}.{self.auto_save_config['format']}")
+            
+            # 根据格式保存文件
+            if self.auto_save_config['format'] == 'txt':
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(result)
+            elif self.auto_save_config['format'] == 'word':
+                from docx import Document
+                doc = Document()
+                doc.add_paragraph(result)
+                doc.save(output_path)
+            elif self.auto_save_config['format'] == 'pdf':
+                from reportlab.pdfgen import canvas
+                from reportlab.lib.pagesizes import letter
+                c = canvas.Canvas(output_path, pagesize=letter)
+                textobject = c.beginText()
+                textobject.setTextOrigin(50, 750)
+                textobject.setFont("Helvetica", 12)
+                
+                for line in result.split('\n'):
+                    textobject.textLine(line)
+                    
+                c.drawText(textobject)
+                c.save()
+                
+            self.log_text.append(f"结果已自动保存到: {output_path}")
+            
+        except Exception as e:
+            self.log_text.append(f"自动保存失败: {str(e)}")
+
+    def show_export_dialog(self):
+        """显示导出对话框"""
+        dialog = ExportDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            settings = dialog.get_settings()
+            dialog.save_settings()
+            
+            if settings['is_batch']:
+                self.batch_export(settings)
+            else:
+                self.export_single(settings)
+    
+    def export_single(self, settings):
+        """导出单个文件"""
+        try:
+            # 确保输出目录存在
+            output_dir = settings['output_dir']
+            if settings['auto_create_dir'] and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # 生成输出文件名
+            base_name = os.path.splitext(os.path.basename(self.current_pdf_path))[0]
+            output_path = os.path.join(output_dir, f"{base_name}.{self._get_extension(settings['format'])}")
+            
+            # 获取文本内容
+            text = self.result_text.toPlainText()
+            
+            # 根据格式导出
+            if settings['format'] == 'TXT文本':
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+            elif settings['format'] == 'Word文档':
+                from docx import Document
+                doc = Document()
+                doc.add_paragraph(text)
+                doc.save(output_path)
+            elif settings['format'] == 'PDF文件':
+                from reportlab.pdfgen import canvas
+                from reportlab.lib.pagesizes import letter
+                c = canvas.Canvas(output_path, pagesize=letter)
+                textobject = c.beginText()
+                textobject.setTextOrigin(50, 750)
+                textobject.setFont("Helvetica", 12)
+                
+                for line in text.split('\n'):
+                    textobject.textLine(line)
+                    
+                c.drawText(textobject)
+                c.save()
+            
+            QMessageBox.information(self, "成功", f"文件已导出到：\n{output_path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
+    
+    def batch_export(self, settings):
+        """批量导出"""
+        # 选择多个PDF文件
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择PDF文件",
+            "",
+            "PDF文件 (*.pdf)"
+        )
+        
+        if not files:
+            return
+            
+        # 确保输出目录存在
+        output_dir = settings['output_dir']
+        if settings['auto_create_dir'] and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # 开始批量处理
+        self.batch_progress.setVisible(True)
+        self.batch_progress.setMaximum(len(files))
+        self.batch_progress.setValue(0)
+        
+        for i, file in enumerate(files):
+            try:
+                # 处理PDF
+                self.current_pdf_path = file
+                self.start_ocr(file)
+                
+                # 等待处理完成
+                while self.progress_bar.isVisible():
+                    QApplication.processEvents()
+                    
+                # 获取结果
+                text = self.result_text.toPlainText()
+                
+                # 导出文件
+                base_name = os.path.splitext(os.path.basename(file))[0]
+                output_path = os.path.join(
+                    output_dir,
+                    f"{base_name}.{self._get_extension(settings['format'])}"
+                )
+                
+                if settings['format'] == 'TXT文本':
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        f.write(text)
+                elif settings['format'] == 'Word文档':
+                    from docx import Document
+                    doc = Document()
+                    doc.add_paragraph(text)
+                    doc.save(output_path)
+                elif settings['format'] == 'PDF文件':
+                    from reportlab.pdfgen import canvas
+                    from reportlab.lib.pagesizes import letter
+                    c = canvas.Canvas(output_path, pagesize=letter)
+                    textobject = c.beginText()
+                    textobject.setTextOrigin(50, 750)
+                    textobject.setFont("Helvetica", 12)
+                    
+                    for line in text.split('\n'):
+                        textobject.textLine(line)
+                        
+                    c.drawText(textobject)
+                    c.save()
+                    
+                self.batch_progress.setValue(i + 1)
+                QApplication.processEvents()
+                
+            except Exception as e:
+                self.log_text.append(f"处理文件 {file} 时出错: {str(e)}")
+                
+        self.batch_progress.setVisible(False)
+        QMessageBox.information(self, "完成", "批量导出完成")
+    
+    def _get_extension(self, format_name):
+        """获取文件扩展名"""
+        if format_name == 'TXT文本':
+            return 'txt'
+        elif format_name == 'Word文档':
+            return 'docx'
+        elif format_name == 'PDF文件':
+            return 'pdf'
+        return 'txt'
+
 class ProofreadDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("文本校对")
         self.setModal(True)
         
+        # 初始化变量
+        self.current_page = 0
+        self.total_pages = 0
+        self.images = []
+        self.find_dialog = None
+        self.replace_dialog = None
+        
         layout = QVBoxLayout()
         
-        # 创建文本编辑区域
+        # 创建分割器
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左侧：图像预览
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        
+        # 图像显示区域
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(400, 300)
+        self.image_label.setStyleSheet("""
+            QLabel { 
+                background-color: white;
+                border: 1px solid #cccccc;
+            }
+        """)
+        left_layout.addWidget(self.image_label)
+        
+        # 图像控制按钮
+        control_layout = QHBoxLayout()
+        self.prev_button = QPushButton("上一页")
+        self.prev_button.clicked.connect(self.prev_page)
+        self.next_button = QPushButton("下一页")
+        self.next_button.clicked.connect(self.next_page)
+        self.page_label = QLabel("第 1 页")
+        control_layout.addWidget(self.prev_button)
+        control_layout.addWidget(self.page_label)
+        control_layout.addWidget(self.next_button)
+        left_layout.addLayout(control_layout)
+        
+        left_widget.setLayout(left_layout)
+        
+        # 右侧：文本编辑
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        
+        # 文本编辑区域
         self.text_edit = QTextEdit()
         self.text_edit.setMinimumSize(600, 400)
-        layout.addWidget(self.text_edit)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+        """)
+        right_layout.addWidget(self.text_edit)
+        
+        # 工具栏
+        toolbar = QHBoxLayout()
+        self.undo_button = QPushButton("撤销")
+        self.undo_button.clicked.connect(self.text_edit.undo)
+        self.redo_button = QPushButton("重做")
+        self.redo_button.clicked.connect(self.text_edit.redo)
+        self.find_button = QPushButton("查找")
+        self.find_button.clicked.connect(self.show_find_dialog)
+        self.replace_button = QPushButton("替换")
+        self.replace_button.clicked.connect(self.show_replace_dialog)
+        toolbar.addWidget(self.undo_button)
+        toolbar.addWidget(self.redo_button)
+        toolbar.addWidget(self.find_button)
+        toolbar.addWidget(self.replace_button)
+        right_layout.addLayout(toolbar)
+        
+        # 状态栏
+        status_layout = QHBoxLayout()
+        self.status_label = QLabel("就绪")
+        self.word_count_label = QLabel("字数: 0")
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        status_layout.addWidget(self.word_count_label)
+        right_layout.addLayout(status_layout)
+        
+        right_widget.setLayout(right_layout)
+        
+        # 添加组件到分割器
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        
+        # 设置分割器比例
+        splitter.setSizes([400, 600])
+        
+        layout.addWidget(splitter)
         
         # 添加按钮
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -2027,13 +2345,234 @@ class ProofreadDialog(QDialog):
         
         self.setLayout(layout)
         
+        # 连接信号
+        self.text_edit.textChanged.connect(self.update_word_count)
+    
     def set_text(self, text):
         """设置校对文本"""
         self.text_edit.setText(text)
-        
+        self.update_word_count()
+    
     def get_text(self):
         """获取校对后的文本"""
         return self.text_edit.toPlainText()
+    
+    def set_images(self, images):
+        """设置图像列表"""
+        self.images = images
+        self.total_pages = len(images)
+        self.current_page = 0
+        self.update_page()
+    
+    def update_page(self):
+        """更新页面显示"""
+        if self.images and 0 <= self.current_page < self.total_pages:
+            # 显示当前页图像
+            img = self.images[self.current_page]
+            
+            # 将PIL图像转换为QImage
+            if isinstance(img, Image.Image):
+                # 确保图像是RGB模式
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                # 转换为字节数据
+                data = img.tobytes('raw', 'RGB')
+                # 创建QImage
+                qimage = QImage(data, img.size[0], img.size[1], QImage.Format_RGB888)
+                # 转换为QPixmap并显示
+                pixmap = QPixmap.fromImage(qimage)
+                # 缩放图像以适应标签大小
+                scaled_pixmap = pixmap.scaled(
+                    self.image_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                self.image_label.setPixmap(scaled_pixmap)
+            
+            # 更新页面标签
+            self.page_label.setText(f"第 {self.current_page + 1} 页 / 共 {self.total_pages} 页")
+            
+            # 更新按钮状态
+            self.prev_button.setEnabled(self.current_page > 0)
+            self.next_button.setEnabled(self.current_page < self.total_pages - 1)
+    
+    def prev_page(self):
+        """显示上一页"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_page()
+    
+    def next_page(self):
+        """显示下一页"""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.update_page()
+    
+    def update_word_count(self):
+        """更新字数统计"""
+        text = self.text_edit.toPlainText()
+        words = len(text.split())
+        chars = len(text)
+        self.word_count_label.setText(f"字数: {words} | 字符数: {chars}")
+    
+    def show_find_dialog(self):
+        """显示查找对话框"""
+        if not self.find_dialog:
+            self.find_dialog = FindDialog(self)
+        self.find_dialog.show()
+    
+    def show_replace_dialog(self):
+        """显示替换对话框"""
+        if not self.replace_dialog:
+            self.replace_dialog = ReplaceDialog(self)
+        self.replace_dialog.show()
+    
+    def resizeEvent(self, event):
+        """窗口大小改变时更新图像大小"""
+        super().resizeEvent(event)
+        self.update_page()
+
+class FindDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("查找")
+        self.setModal(False)
+        
+        layout = QVBoxLayout()
+        
+        # 查找内容
+        find_layout = QHBoxLayout()
+        self.find_edit = QLineEdit()
+        self.find_edit.textChanged.connect(self.find)
+        find_layout.addWidget(QLabel("查找:"))
+        find_layout.addWidget(self.find_edit)
+        layout.addLayout(find_layout)
+        
+        # 选项
+        options_layout = QHBoxLayout()
+        self.case_sensitive = QCheckBox("区分大小写")
+        self.whole_words = QCheckBox("全字匹配")
+        options_layout.addWidget(self.case_sensitive)
+        options_layout.addWidget(self.whole_words)
+        layout.addLayout(options_layout)
+        
+        # 按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def find(self):
+        """查找文本"""
+        text = self.find_edit.text()
+        if not text:
+            return
+            
+        flags = QTextDocument.FindFlags()
+        if self.case_sensitive.isChecked():
+            flags |= QTextDocument.FindCaseSensitively
+        if self.whole_words.isChecked():
+            flags |= QTextDocument.FindWholeWords
+            
+        found = self.parent().text_edit.find(text, flags)
+        if not found:
+            QMessageBox.information(self, "查找", "已到达文档末尾")
+
+class ReplaceDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("替换")
+        self.setModal(False)
+        
+        layout = QVBoxLayout()
+        
+        # 查找内容
+        find_layout = QHBoxLayout()
+        self.find_edit = QLineEdit()
+        find_layout.addWidget(QLabel("查找:"))
+        find_layout.addWidget(self.find_edit)
+        layout.addLayout(find_layout)
+        
+        # 替换内容
+        replace_layout = QHBoxLayout()
+        self.replace_edit = QLineEdit()
+        replace_layout.addWidget(QLabel("替换为:"))
+        replace_layout.addWidget(self.replace_edit)
+        layout.addLayout(replace_layout)
+        
+        # 选项
+        options_layout = QHBoxLayout()
+        self.case_sensitive = QCheckBox("区分大小写")
+        self.whole_words = QCheckBox("全字匹配")
+        options_layout.addWidget(self.case_sensitive)
+        options_layout.addWidget(self.whole_words)
+        layout.addLayout(options_layout)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        self.replace_button = QPushButton("替换")
+        self.replace_button.clicked.connect(self.replace)
+        self.replace_all_button = QPushButton("全部替换")
+        self.replace_all_button.clicked.connect(self.replace_all)
+        button_layout.addWidget(self.replace_button)
+        button_layout.addWidget(self.replace_all_button)
+        layout.addLayout(button_layout)
+        
+        # 关闭按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def replace(self):
+        """替换当前选中文本"""
+        find_text = self.find_edit.text()
+        replace_text = self.replace_edit.text()
+        if not find_text:
+            return
+            
+        flags = QTextDocument.FindFlags()
+        if self.case_sensitive.isChecked():
+            flags |= QTextDocument.FindCaseSensitively
+        if self.whole_words.isChecked():
+            flags |= QTextDocument.FindWholeWords
+            
+        cursor = self.parent().text_edit.textCursor()
+        if cursor.hasSelection():
+            cursor.insertText(replace_text)
+        
+        found = self.parent().text_edit.find(find_text, flags)
+        if not found:
+            QMessageBox.information(self, "替换", "已到达文档末尾")
+    
+    def replace_all(self):
+        """替换所有匹配文本"""
+        find_text = self.find_edit.text()
+        replace_text = self.replace_edit.text()
+        if not find_text:
+            return
+            
+        flags = QTextDocument.FindFlags()
+        if self.case_sensitive.isChecked():
+            flags |= QTextDocument.FindCaseSensitively
+        if self.whole_words.isChecked():
+            flags |= QTextDocument.FindWholeWords
+            
+        # 移动到文档开始
+        cursor = self.parent().text_edit.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self.parent().text_edit.setTextCursor(cursor)
+        
+        # 替换所有
+        count = 0
+        while self.parent().text_edit.find(find_text, flags):
+            cursor = self.parent().text_edit.textCursor()
+            cursor.insertText(replace_text)
+            count += 1
+            
+        QMessageBox.information(self, "替换", f"已完成 {count} 处替换")
 
 class PreviewWidget(QWidget):
     def __init__(self, parent=None):
@@ -2103,6 +2642,188 @@ class PreviewWidget(QWidget):
             f"已识别: {stats['words']}字 | "
             f"置信度: {stats['confidence']}"
         )
+
+class AutoSaveSettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("自动保存设置")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        # 启用自动保存
+        self.enable_check = QCheckBox("启用自动保存")
+        layout.addWidget(self.enable_check)
+        
+        # 输出格式
+        format_layout = QHBoxLayout()
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["TXT", "Word", "PDF"])
+        format_layout.addWidget(QLabel("输出格式:"))
+        format_layout.addWidget(self.format_combo)
+        layout.addLayout(format_layout)
+        
+        # 输出目录
+        dir_layout = QHBoxLayout()
+        self.dir_edit = QLineEdit()
+        self.dir_edit.setReadOnly(True)
+        self.browse_button = QPushButton("浏览")
+        self.browse_button.clicked.connect(self.browse_dir)
+        dir_layout.addWidget(QLabel("输出目录:"))
+        dir_layout.addWidget(self.dir_edit)
+        dir_layout.addWidget(self.browse_button)
+        layout.addLayout(dir_layout)
+        
+        # 自动创建目录
+        self.auto_create_check = QCheckBox("自动创建输出目录")
+        layout.addWidget(self.auto_create_check)
+        
+        # 添加按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+        
+        # 加载当前设置
+        self.load_settings()
+    
+    def load_settings(self):
+        """加载当前设置"""
+        settings = QSettings("PDF_OCR", "Settings")
+        auto_save_config = settings.value("auto_save_config", {
+            'enabled': False,
+            'format': 'txt',
+            'output_dir': os.path.join(os.path.expanduser('~'), 'PDF_OCR_Output'),
+            'auto_create_dir': True
+        })
+        
+        self.enable_check.setChecked(auto_save_config['enabled'])
+        self.format_combo.setCurrentText(auto_save_config['format'].upper())
+        self.dir_edit.setText(auto_save_config['output_dir'])
+        self.auto_create_check.setChecked(auto_save_config['auto_create_dir'])
+    
+    def browse_dir(self):
+        """选择输出目录"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "选择输出目录",
+            self.dir_edit.text()
+        )
+        if dir_path:
+            self.dir_edit.setText(dir_path)
+    
+    def get_config(self):
+        """获取设置"""
+        return {
+            'enabled': self.enable_check.isChecked(),
+            'format': self.format_combo.currentText().lower(),
+            'output_dir': self.dir_edit.text(),
+            'auto_create_dir': self.auto_create_check.isChecked()
+        }
+
+class ExportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("导出设置")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        # 导出格式选择
+        format_group = QGroupBox("导出格式")
+        format_layout = QVBoxLayout()
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["TXT文本", "Word文档", "PDF文件"])
+        format_layout.addWidget(self.format_combo)
+        format_group.setLayout(format_layout)
+        layout.addWidget(format_group)
+        
+        # 导出选项
+        options_group = QGroupBox("导出选项")
+        options_layout = QVBoxLayout()
+        
+        # 单个文件导出
+        self.single_file_radio = QRadioButton("导出当前文件")
+        self.single_file_radio.setChecked(True)
+        options_layout.addWidget(self.single_file_radio)
+        
+        # 批量导出
+        self.batch_radio = QRadioButton("批量导出")
+        options_layout.addWidget(self.batch_radio)
+        
+        # 输出目录
+        dir_layout = QHBoxLayout()
+        self.dir_edit = QLineEdit()
+        self.dir_edit.setReadOnly(True)
+        self.browse_button = QPushButton("浏览")
+        self.browse_button.clicked.connect(self.browse_dir)
+        dir_layout.addWidget(QLabel("输出目录:"))
+        dir_layout.addWidget(self.dir_edit)
+        dir_layout.addWidget(self.browse_button)
+        options_layout.addLayout(dir_layout)
+        
+        # 自动创建目录
+        self.auto_create_check = QCheckBox("自动创建输出目录")
+        self.auto_create_check.setChecked(True)
+        options_layout.addWidget(self.auto_create_check)
+        
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        # 添加按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+        
+        # 加载上次的设置
+        self.load_settings()
+        
+        # 连接信号
+        self.batch_radio.toggled.connect(self.update_ui)
+        self.update_ui()
+    
+    def load_settings(self):
+        """加载上次的设置"""
+        settings = QSettings("PDF_OCR", "ExportSettings")
+        self.dir_edit.setText(settings.value("output_dir", os.path.join(os.path.expanduser('~'), 'PDF_OCR_Output')))
+        self.format_combo.setCurrentText(settings.value("format", "TXT文本"))
+        self.auto_create_check.setChecked(settings.value("auto_create_dir", True, type=bool))
+    
+    def save_settings(self):
+        """保存设置"""
+        settings = QSettings("PDF_OCR", "ExportSettings")
+        settings.setValue("output_dir", self.dir_edit.text())
+        settings.setValue("format", self.format_combo.currentText())
+        settings.setValue("auto_create_dir", self.auto_create_check.isChecked())
+    
+    def browse_dir(self):
+        """选择输出目录"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "选择输出目录",
+            self.dir_edit.text()
+        )
+        if dir_path:
+            self.dir_edit.setText(dir_path)
+    
+    def update_ui(self):
+        """更新界面状态"""
+        # 移除之前的UI状态更新逻辑，让所有控件都保持可用状态
+        pass
+    
+    def get_settings(self):
+        """获取导出设置"""
+        return {
+            'format': self.format_combo.currentText(),
+            'is_batch': self.batch_radio.isChecked(),
+            'output_dir': self.dir_edit.text(),
+            'auto_create_dir': self.auto_create_check.isChecked()
+        }
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
