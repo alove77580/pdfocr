@@ -1232,10 +1232,88 @@ class MainWindow(QMainWindow):
         self.log_text.setMaximumHeight(300)
         self.log_text.setStyleSheet("""
             QTextEdit {
-                background-color: #f0f0f0;
+                background-color: #f5f5f5;
+                color: #333333;
                 font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                line-height: 1.5;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f5f5f5;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #cccccc;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
             }
         """)
+        
+        # 创建日志标题栏
+        log_header = QWidget()
+        log_header.setStyleSheet("""
+            QWidget {
+                background-color: #e0e0e0;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                padding: 4px;
+            }
+            QLabel {
+                color: #333333;
+                font-weight: bold;
+            }
+        """)
+        log_header_layout = QHBoxLayout()
+        log_header_layout.setContentsMargins(8, 4, 8, 4)
+        
+        log_title = QLabel("控制台输出")
+        log_title.setStyleSheet("color: #333333; font-weight: bold;")
+        log_header_layout.addWidget(log_title)
+        
+        # 添加清除按钮
+        clear_button = QPushButton("清除")
+        clear_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #d4d4d4;
+                border: none;
+                padding: 4px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4c4c4c;
+            }
+        """)
+        clear_button.clicked.connect(self.log_text.clear)
+        log_header_layout.addWidget(clear_button)
+        
+        log_header.setLayout(log_header_layout)
+        
+        # 创建日志容器
+        log_container = QWidget()
+        log_container.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                border-radius: 4px;
+            }
+        """)
+        log_layout = QVBoxLayout()
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(0)
+        log_layout.addWidget(log_header)
+        log_layout.addWidget(self.log_text)
+        log_container.setLayout(log_layout)
         
         # 创建结果显示区域
         self.result_text = QTextEdit()
@@ -1254,7 +1332,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(button_layout)
         right_layout.addLayout(settings_layout)
         right_layout.addWidget(self.progress_bar)
-        right_layout.addWidget(self.log_text)
+        right_layout.addWidget(log_container)  # 使用新的日志容器替换原来的日志文本编辑器
         right_layout.addWidget(self.result_text)
         right_layout.addWidget(self.proofread_button)
         right_layout.addWidget(self.stats_label)
@@ -1602,13 +1680,32 @@ class MainWindow(QMainWindow):
         )
     
     def _update_log(self, message):
-        self.log_text.append(message)
-        # 滚动到底部
+        """更新日志显示"""
+        # 根据消息类型设置不同的颜色
+        if "错误" in message:
+            color = "#d32f2f"  # 深红色
+        elif "警告" in message:
+            color = "#f57c00"  # 橙色
+        elif "成功" in message or "完成" in message:
+            color = "#388e3c"  # 深绿色
+        elif "信息" in message or "提示" in message:
+            color = "#1976d2"  # 深蓝色
+        else:
+            color = "#333333"  # 深灰色
+            
+        # 获取当前时间
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        # 格式化消息
+        formatted_message = f'<span style="color: #666666;">[{current_time}]</span> <span style="color: {color};">{message}</span>'
+        
+        # 添加消息到日志
+        self.log_text.append(formatted_message)
+        
+        # 自动滚动到底部
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
-        # 确保日志窗口可见
-        self.log_text.setVisible(True)
     
     def _update_progress(self, value):
         self.progress_bar.setValue(value)
