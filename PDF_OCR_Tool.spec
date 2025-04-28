@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('tesseract', 'tesseract'), ('poppler', 'poppler'), ('assets', 'assets')],
+    datas=[('tesseract', 'tesseract'), ('poppler', 'poppler'), ('assets', 'assets'), ('assets/icon.ico', '.')],
     hiddenimports=['PIL._tkinter', 'pytesseract', 'pdf2image', 'PIL', 'PIL.Image', 'PIL.ImageTk'],
     hookspath=[],
     hooksconfig={},
