@@ -472,7 +472,9 @@ class OCRWorker(QRunnable):
             cache_key = self._get_cache_key()
             cached_result = self._get_cached_result(cache_key)
             if cached_result:
-                self.log_callback("使用缓存结果")
+                if not hasattr(self, '_cache_used'):
+                    self.log_callback("使用缓存结果")
+                    self._cache_used = True
                 return cached_result
                 
             # 获取API配置
@@ -531,7 +533,9 @@ class OCRWorker(QRunnable):
             cache_key = self._get_cache_key()
             cached_result = self._get_cached_result(cache_key)
             if cached_result:
-                self.log_callback("使用缓存结果")
+                if not hasattr(self, '_cache_used'):
+                    self.log_callback("使用缓存结果")
+                    self._cache_used = True
                 return cached_result
                 
             # 设置Tesseract路径
