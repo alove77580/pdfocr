@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('tesseract', 'tesseract'), ('poppler', 'poppler')],
+    datas=[('tesseract', 'tesseract'), ('poppler', 'poppler'), ('assets', 'assets')],
     hiddenimports=['PIL._tkinter', 'pytesseract', 'pdf2image', 'PIL', 'PIL.Image', 'PIL.ImageTk'],
     hookspath=[],
     hooksconfig={},
@@ -32,6 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['assets\\icon.ico'],
 )
 coll = COLLECT(
     exe,
