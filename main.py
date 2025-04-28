@@ -1081,6 +1081,10 @@ class MainWindow(QMainWindow):
         icon_path = get_resource_path('icon.ico')
         self.setWindowIcon(QIcon(icon_path))
         
+        # 创建主题管理器
+        self.theme_manager = ThemeManager()
+        self.current_theme = "浅色"
+        
         # 创建主窗口部件
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -1137,8 +1141,8 @@ class MainWindow(QMainWindow):
         
         # 创建主题切换按钮
         theme_layout = QHBoxLayout()
-        self.theme_button = QPushButton("切换主题")
-        self.theme_button.clicked.connect(self.toggle_theme)
+        self.theme_button = QPushButton("主题设置")
+        self.theme_button.clicked.connect(self.show_theme_dialog)
         theme_layout.addWidget(self.theme_button)
         theme_layout.addStretch()
         right_layout.addLayout(theme_layout)
@@ -1351,7 +1355,6 @@ class MainWindow(QMainWindow):
         main_widget.setLayout(main_layout)
         
         self.ocr_thread = None
-        self.current_theme = "浅色"
         self.history = []
         self.recent_files = []
         
@@ -1431,48 +1434,37 @@ class MainWindow(QMainWindow):
         self.settings.setValue("theme", self.current_theme)
     
     def apply_theme(self):
+        """应用主题"""
+        stylesheet = self.theme_manager.get_theme_stylesheet(self.current_theme)
+        self.setStyleSheet(stylesheet)
+        
+        # 更新日志窗口样式
         if self.current_theme == "深色":
-            self.setStyleSheet("""
-                QMainWindow, QWidget {
-                    background-color: #2b2b2b;
-                    color: #ffffff;
-                }
-                QPushButton {
-                    background-color: #3c3f41;
-                    color: #ffffff;
-                    border: 1px solid #555555;
-                }
-                QPushButton:hover {
-                    background-color: #4c4f51;
-                }
+            self.log_text.setStyleSheet("""
                 QTextEdit {
                     background-color: #323232;
                     color: #ffffff;
-                }
-                QComboBox, QSpinBox {
-                    background-color: #3c3f41;
-                    color: #ffffff;
-                }
-                QListWidget {
-                    background-color: #323232;
-                    color: #ffffff;
-                }
-                QTabWidget::pane {
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
                     border: 1px solid #555555;
-                    background-color: #2b2b2b;
-                }
-                QTabBar::tab {
-                    background-color: #3c3f41;
-                    color: #ffffff;
-                    border: 1px solid #555555;
+                    border-radius: 4px;
                     padding: 8px;
-                }
-                QTabBar::tab:selected {
-                    background-color: #4c4f51;
                 }
             """)
         else:
-            self.setStyleSheet("")
+            self.log_text.setStyleSheet("""
+                QTextEdit {
+                    background-color: #f5f5f5;
+                    color: #333333;
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                    border: 1px solid #cccccc;
+                    border-radius: 4px;
+                    padding: 8px;
+                }
+            """)
     
     def toggle_theme(self):
         self.current_theme = "深色" if self.current_theme == "浅色" else "浅色"
@@ -2334,6 +2326,16 @@ class MainWindow(QMainWindow):
             return 'pdf'
         return 'txt'
 
+    def show_theme_dialog(self):
+        """显示主题设置对话框"""
+        dialog = ThemeDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_theme = dialog.get_selected_theme()
+            if new_theme != self.current_theme:
+                self.current_theme = new_theme
+                self.apply_theme()
+                self.save_settings()
+
 class ProofreadDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2921,6 +2923,211 @@ class ExportDialog(QDialog):
             'output_dir': self.dir_edit.text(),
             'auto_create_dir': self.auto_create_check.isChecked()
         }
+
+class ThemeManager:
+    """主题管理器类"""
+    def __init__(self):
+        self.themes = {
+            "浅色": {
+                "background": "#ffffff",
+                "text": "#000000",
+                "button_bg": "#f0f0f0",
+                "button_hover": "#e0e0e0",
+                "button_text": "#000000",
+                "input_bg": "#ffffff",
+                "input_text": "#000000",
+                "border": "#cccccc",
+                "highlight": "#0078d7"
+            },
+            "深色": {
+                "background": "#2b2b2b",
+                "text": "#ffffff",
+                "button_bg": "#3c3f41",
+                "button_hover": "#4c4f51",
+                "button_text": "#ffffff",
+                "input_bg": "#323232",
+                "input_text": "#ffffff",
+                "border": "#555555",
+                "highlight": "#0078d7"
+            },
+            "蓝色": {
+                "background": "#e6f3ff",
+                "text": "#003366",
+                "button_bg": "#0078d7",
+                "button_hover": "#106ebe",
+                "button_text": "#ffffff",
+                "input_bg": "#ffffff",
+                "input_text": "#003366",
+                "border": "#0078d7",
+                "highlight": "#0078d7"
+            },
+            "绿色": {
+                "background": "#f0fff0",
+                "text": "#006400",
+                "button_bg": "#2e8b57",
+                "button_hover": "#3cb371",
+                "button_text": "#ffffff",
+                "input_bg": "#ffffff",
+                "input_text": "#006400",
+                "border": "#2e8b57",
+                "highlight": "#2e8b57"
+            },
+            "紫色": {
+                "background": "#f5f0ff",
+                "text": "#4b0082",
+                "button_bg": "#9370db",
+                "button_hover": "#a67de8",
+                "button_text": "#ffffff",
+                "input_bg": "#ffffff",
+                "input_text": "#4b0082",
+                "border": "#9370db",
+                "highlight": "#9370db"
+            }
+        }
+    
+    def get_theme(self, name):
+        """获取指定主题的样式表"""
+        if name not in self.themes:
+            return self.themes["浅色"]
+        return self.themes[name]
+    
+    def get_theme_names(self):
+        """获取所有主题名称"""
+        return list(self.themes.keys())
+    
+    def get_theme_stylesheet(self, theme_name):
+        """获取主题的样式表字符串"""
+        theme = self.get_theme(theme_name)
+        return f"""
+            QMainWindow, QWidget {{
+                background-color: {theme['background']};
+                color: {theme['text']};
+            }}
+            QPushButton {{
+                background-color: {theme['button_bg']};
+                color: {theme['button_text']};
+                border: 1px solid {theme['border']};
+                padding: 5px;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background-color: {theme['button_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {theme['button_hover']};
+                border: 2px solid {theme['highlight']};
+            }}
+            QTextEdit, QLineEdit, QComboBox, QSpinBox {{
+                background-color: {theme['input_bg']};
+                color: {theme['input_text']};
+                border: 1px solid {theme['border']};
+                border-radius: 3px;
+                padding: 3px;
+            }}
+            QListWidget {{
+                background-color: {theme['input_bg']};
+                color: {theme['input_text']};
+                border: 1px solid {theme['border']};
+                border-radius: 3px;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {theme['border']};
+                background-color: {theme['background']};
+            }}
+            QTabBar::tab {{
+                background-color: {theme['button_bg']};
+                color: {theme['button_text']};
+                border: 1px solid {theme['border']};
+                padding: 8px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: {theme['button_hover']};
+            }}
+            QProgressBar {{
+                border: 1px solid {theme['border']};
+                border-radius: 3px;
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background-color: {theme['highlight']};
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: {theme['background']};
+                width: 10px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {theme['button_bg']};
+                min-height: 20px;
+                border-radius: 5px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """
+
+class ThemeDialog(QDialog):
+    """主题设置对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("主题设置")
+        self.setModal(True)
+        
+        self.theme_manager = ThemeManager()
+        self.current_theme = parent.current_theme if parent else "浅色"
+        
+        layout = QVBoxLayout()
+        
+        # 主题选择
+        theme_group = QGroupBox("选择主题")
+        theme_layout = QVBoxLayout()
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(self.theme_manager.get_theme_names())
+        self.theme_combo.setCurrentText(self.current_theme)
+        self.theme_combo.currentTextChanged.connect(self.preview_theme)
+        theme_layout.addWidget(QLabel("主题:"))
+        theme_layout.addWidget(self.theme_combo)
+        
+        theme_group.setLayout(theme_layout)
+        layout.addWidget(theme_group)
+        
+        # 预览区域
+        preview_group = QGroupBox("预览")
+        preview_layout = QVBoxLayout()
+        
+        self.preview_widget = QWidget()
+        self.preview_widget.setMinimumHeight(200)
+        preview_layout.addWidget(self.preview_widget)
+        
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+        
+        # 添加按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+        
+        # 初始预览
+        self.preview_theme(self.current_theme)
+    
+    def preview_theme(self, theme_name):
+        """预览主题效果"""
+        stylesheet = self.theme_manager.get_theme_stylesheet(theme_name)
+        self.preview_widget.setStyleSheet(stylesheet)
+    
+    def get_selected_theme(self):
+        """获取选择的主题"""
+        return self.theme_combo.currentText()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
