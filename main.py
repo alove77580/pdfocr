@@ -8,16 +8,18 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import io
 
 import pytesseract
 from PyQt5.QtCore import Qt, pyqtSignal, QThreadPool, QRunnable, QObject, QSettings
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
                              QVBoxLayout, QWidget, QFileDialog, QProgressBar, QTextEdit,
                              QMessageBox, QHBoxLayout, QComboBox, QSpinBox, QSlider, QDialog,
                              QDialogButtonBox, QListWidget, QSplitter, QMenu,
-                             QSystemTrayIcon, QTabWidget, QStyle, QGroupBox)
+                             QSystemTrayIcon, QTabWidget, QStyle, QGroupBox, QLineEdit)
 from pdf2image import convert_from_path
+from PIL import Image, ImageEnhance
 
 
 def get_resource_path(relative_path):
@@ -325,19 +327,42 @@ class BaiduAPISettingsDialog(QDialog):
 
         layout = QVBoxLayout()
 
-        self.app_id_input = QTextEdit(self.settings.value("app_id", ""))
-        self.api_key_input = QTextEdit(self.settings.value("api_key", ""))
-        self.secret_key_input = QTextEdit(self.settings.value("secret_key", ""))
-
-        for widget, label in [
-            (self.app_id_input, "App ID"),
-            (self.api_key_input, "API Key"),
-            (self.secret_key_input, "Secret Key")
+        # 创建输入框和标签
+        for name, label in [
+            ("app_id", "App ID"),
+            ("api_key", "API Key"),
+            ("secret_key", "Secret Key")
         ]:
-            layout.addWidget(QLabel(label))
-            widget.setFixedHeight(30)
-            layout.addWidget(widget)
+            # 创建水平布局
+            h_layout = QHBoxLayout()
+            
+            # 添加标签
+            h_layout.addWidget(QLabel(label))
+            
+            # 创建输入框
+            input_widget = QLineEdit(self.settings.value(name, ""))
+            setattr(self, f"{name}_input", input_widget)
+            
+            # 如果是密钥，添加显示/隐藏按钮
+            if name in ["api_key", "secret_key"]:
+                input_widget.setEchoMode(QLineEdit.Password)
+                toggle_btn = QPushButton("显示")
+                toggle_btn.setCheckable(True)
+                toggle_btn.clicked.connect(
+                    lambda checked, widget=input_widget: 
+                    widget.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+                )
+                h_layout.addWidget(toggle_btn)
+            
+            h_layout.addWidget(input_widget)
+            layout.addLayout(h_layout)
 
+        # 添加测试按钮
+        test_btn = QPushButton("测试API")
+        test_btn.clicked.connect(self.test_api)
+        layout.addWidget(test_btn)
+
+        # 添加确定/取消按钮
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.save_settings)
         button_box.rejected.connect(self.reject)
@@ -345,10 +370,52 @@ class BaiduAPISettingsDialog(QDialog):
 
         self.setLayout(layout)
 
+    def test_api(self):
+        """测试API是否可用"""
+        try:
+            # 获取当前输入的值
+            app_id = self.app_id_input.text().strip()
+            api_key = self.api_key_input.text().strip()
+            secret_key = self.secret_key_input.text().strip()
+            
+            if not all([app_id, api_key, secret_key]):
+                QMessageBox.warning(self, "错误", "请填写所有字段")
+                return
+                
+            # 创建测试图像
+            from PIL import Image, ImageDraw
+            img = Image.new('RGB', (100, 100), color='white')
+            draw = ImageDraw.Draw(img)
+            draw.text((10, 10), "测试", fill='black')
+            
+            # 调用百度OCR API
+            from aip import AipOcr
+            client = AipOcr(app_id, api_key, secret_key)
+            result = client.basicGeneral(img.tobytes())
+            
+            if 'words_result' in result:
+                QMessageBox.information(self, "成功", "API测试成功！")
+            else:
+                QMessageBox.warning(self, "错误", f"API返回错误: {result.get('error_msg', '未知错误')}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"测试失败: {str(e)}")
+
     def save_settings(self):
-        self.settings.setValue("app_id", self.app_id_input.toPlainText().strip())
-        self.settings.setValue("api_key", self.api_key_input.toPlainText().strip())
-        self.settings.setValue("secret_key", self.secret_key_input.toPlainText().strip())
+        """保存设置"""
+        # 获取当前输入的值
+        app_id = self.app_id_input.text().strip()
+        api_key = self.api_key_input.text().strip()
+        secret_key = self.secret_key_input.text().strip()
+        
+        if not all([app_id, api_key, secret_key]):
+            QMessageBox.warning(self, "错误", "请填写所有字段")
+            return
+            
+        # 保存设置
+        self.settings.setValue("app_id", app_id)
+        self.settings.setValue("api_key", api_key)
+        self.settings.setValue("secret_key", secret_key)
         self.accept()
 
 
@@ -361,189 +428,184 @@ class OCRWorker(QRunnable):
         self.log_callback = log_callback
         self.finished_callback = finished_callback
         self._stop_event = threading.Event()
+        self.settings = QSettings("PDF_OCR", "BaiduAPI")
+        self.request_queue = []
+        self.max_retries = 3
+        self.retry_delay = 2  # 秒
+        self.cache = {}
     
-    def run(self):
+    def _validate_pdf(self):
+        """验证PDF文件"""
+        try:
+            # 检查文件是否存在
+            if not os.path.exists(self.pdf_path):
+                raise ValueError(f"文件不存在: {self.pdf_path}")
+                
+            # 检查文件大小
+            file_size = os.path.getsize(self.pdf_path)
+            if file_size == 0:
+                raise ValueError("文件为空")
+                
+            # 检查文件格式
+            with open(self.pdf_path, 'rb') as f:
+                header = f.read(4)
+                if header != b'%PDF':
+                    raise ValueError("不是有效的PDF文件")
+                    
+            # 检查文件是否可读
+            try:
+                with open(self.pdf_path, 'rb') as f:
+                    f.read(1)
+            except IOError:
+                raise ValueError("文件无法读取，请检查文件权限")
+                
+            return True
+            
+        except Exception as e:
+            self.log_callback(f"PDF文件验证失败: {str(e)}")
+            raise
+            
+    def _process_with_baidu(self, img):
+        """使用百度OCR处理图像"""
         try:
             # 检查缓存
             cache_key = self._get_cache_key()
             cached_result = self._get_cached_result(cache_key)
             if cached_result:
                 self.log_callback("使用缓存结果")
-                self.finished_callback(cached_result)
-                return
+                return cached_result
+                
+            # 获取API配置
+            app_id = self.settings.value("app_id", "")
+            api_key = self.settings.value("api_key", "")
+            secret_key = self.settings.value("secret_key", "")
             
+            # 检查API配置是否完整
+            if not all([app_id, api_key, secret_key]):
+                raise ValueError("百度OCR API配置不完整，请先配置API信息")
+                
+            # 创建客户端
+            from aip import AipOcr
+            client = AipOcr(app_id, api_key, secret_key)
+            
+            # 转换为字节
+            img_byte = io.BytesIO()
+            img.save(img_byte, format='PNG')
+            img_byte = img_byte.getvalue()
+            
+            # 调用API（带重试机制）
+            options = {}
+            if self.config.get('language') != 'auto':
+                options['language_type'] = self.config['language']
+                
+            for attempt in range(self.max_retries):
+                try:
+                    result = client.basicGeneral(img_byte, options)
+                    
+                    if 'error_code' in result:
+                        if result['error_code'] == 18:  # QPS超限
+                            time.sleep(self.retry_delay)
+                            continue
+                        raise ValueError(f"百度OCR API错误: {result['error_msg']}")
+                        
+                    # 提取文本
+                    text = '\n'.join([item['words'] for item in result.get('words_result', [])])
+                    
+                    # 缓存结果
+                    self._cache_result(cache_key, text)
+                    return text
+                    
+                except Exception as e:
+                    if attempt == self.max_retries - 1:
+                        raise
+                    time.sleep(self.retry_delay)
+                    
+        except Exception as e:
+            self.log_callback(f"百度OCR处理失败: {str(e)}")
+            return None
+
+    def _process_with_tesseract(self, img):
+        """使用Tesseract处理图像"""
+        try:
+            # 检查缓存
+            cache_key = self._get_cache_key()
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result:
+                self.log_callback("使用缓存结果")
+                return cached_result
+                
             # 设置Tesseract路径
             tesseract_path = get_tesseract_path()
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
-                self.log_callback(f"Tesseract路径: {tesseract_path}")
             else:
-                raise Exception("找不到Tesseract-OCR")
-            
-            # 设置Poppler路径
-            poppler_path = get_poppler_path()
-            if not poppler_path:
-                raise Exception("找不到Poppler，请确保程序完整性")
-            self.log_callback(f"Poppler路径: {poppler_path}")
-            
-            # 将PDF转换为图像
-            try:
-                self.log_callback("开始转换PDF...")
-                self.log_callback(f"使用DPI: {self.config['dpi']}")
-                images = convert_from_path(
-                    self.pdf_path,
-                    poppler_path=poppler_path,
-                    dpi=self.config['dpi']
-                )
-                self.log_callback(f"PDF转换完成，共{len(images)}页")
-            except Exception as e:
-                self.log_callback(f"PDF转换错误: {str(e)}")
-                self.log_callback(traceback.format_exc())
-                raise Exception(f"PDF转换失败: {str(e)}")
-            
-            total_pages = len(images)
-            result_text = ""
-            
-            # 配置Tesseract参数
+                raise ValueError("找不到Tesseract-OCR")
+                
+            # 设置TESSDATA_PREFIX环境变量
             tessdata_path = get_tessdata_path()
             if not tessdata_path:
-                raise Exception("找不到tessdata目录")
-            
-            # 设置TESSDATA_PREFIX环境变量
+                raise ValueError("找不到tessdata目录")
             os.environ['TESSDATA_PREFIX'] = tessdata_path
-            self.log_callback(f"TESSDATA_PREFIX设置为: {tessdata_path}")
             
             # 获取语言设置
-            language = self.config['language'].split(' ')[-1].strip('()')
-            if language == "自动检测":
-                self.log_callback("正在检测文档语言...")
-                language = self.detect_language(images[0])
-                self.log_callback(f"检测到语言: {language}")
-            else:
-                self.log_callback(f"使用指定语言: {language}")
-            
-            # 检查语言文件是否存在
-            for lang in language.split('+'):
-                lang_path = os.path.join(tessdata_path, f"{lang}.traineddata")
-                if not os.path.exists(lang_path):
-                    raise Exception(f"找不到语言文件: {lang}")
-                self.log_callback(f"找到语言文件: {lang}")
-            
-            # 使用配置的参数
-            custom_config = f'--oem {self.config["oem"]} --psm {self.config["psm"]}'
-            self.log_callback(f"OCR参数: {custom_config}")
-            self.log_callback(f"图像预处理: 对比度={self.config['contrast']}, 亮度={self.config['brightness']}, 锐化={self.config['sharpen']}")
-            
-            # 创建线程池
-            # 根据CPU核心数动态设置线程数
-            cpu_count = os.cpu_count() or 4
-            max_workers = min(cpu_count * 2, 16)  # 最多16个线程
-            self.log_callback(f"使用{max_workers}个线程并行处理")
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 准备任务列表
-                futures = []
-                for i, image in enumerate(images):
-                    if self._stop_event.is_set():
-                        self.log_callback("处理已取消")
-                        return
-                    futures.append(executor.submit(self._process_page, i, image, language, custom_config))
+            language = self.config.get('language', 'chi_sim')
+            # 处理语言格式
+            if isinstance(language, str):
+                if '(' in language:
+                    language = language.split('(')[-1].strip(')')
+                elif language == "自动检测":
+                    language = 'auto'
+                    
+            if language == 'auto':
+                # 简单的语言检测
+                text = pytesseract.image_to_string(img, lang='chi_sim')
+                if len(text.strip()) > 0:
+                    language = 'chi_sim'
+                else:
+                    text = pytesseract.image_to_string(img, lang='eng')
+                    if len(text.strip()) > 0:
+                        language = 'eng'
+                    else:
+                        language = 'chi_sim'
+                        
+            # 检查语言文件
+            lang_path = os.path.join(tessdata_path, f"{language}.traineddata")
+            if not os.path.exists(lang_path):
+                raise ValueError(f"找不到语言文件: {language}")
                 
-                # 等待所有任务完成并收集结果
-                for future in futures:
-                    if self._stop_event.is_set():
-                        self.log_callback("处理已取消")
-                        return
-                    try:
-                        page_num, page_text = future.result()
-                        result_text += f"=== 第 {page_num+1} 页 ===\n{page_text}\n\n"
-                        progress = int((page_num + 1) / total_pages * 100)
-                        self.progress_callback(progress)
-                    except Exception as e:
-                        self.log_callback(f"页面处理错误: {str(e)}")
-                        self.log_callback(traceback.format_exc())
-                        raise Exception(f"页面处理失败: {str(e)}")
-            
-            # 缓存结果
-            self.log_callback("正在缓存结果...")
-            self._cache_result(cache_key, result_text)
-            self.log_callback("处理完成")
-            
-            self.finished_callback(result_text)
-        except Exception as e:
-            error_msg = f"错误: {str(e)}\n\n详细信息:\n{traceback.format_exc()}"
-            self.finished_callback(error_msg)
-    
-    def _process_page(self, page_num, image, language, custom_config):
-        """处理单个页面的OCR"""
-        try:
-            self.log_callback(f"正在处理第{page_num+1}页...")
+            # 配置Tesseract参数
+            custom_config = f'--oem {self.config.get("oem", 1)} --psm {self.config.get("psm", 3)}'
             
             # 预处理图像
-            if image.mode != 'L':
-                image = image.convert('L')
-                self.log_callback("转换为灰度图像")
+            if img.mode != 'L':
+                img = img.convert('L')
+                
+            # 应用对比度和亮度
+            contrast = self.config.get('contrast', 1.0)
+            brightness = self.config.get('brightness', 1.0)
             
-            # 应用配置的对比度和亮度
-            from PIL import ImageEnhance
-            enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(self.config['contrast'])
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(self.config['brightness'])
-            self.log_callback("应用对比度和亮度调整")
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(contrast)
+            enhancer = ImageEnhance.Brightness(img)
+            img = enhancer.enhance(brightness)
             
-            # 应用锐化
-            if self.config['sharpen'] != 1.0:
-                from PIL import ImageFilter
-                image = image.filter(ImageFilter.UnsharpMask(
-                    radius=2, percent=self.config['sharpen']*100, threshold=3))
-                self.log_callback("应用锐化处理")
-            
-            # 进行OCR识别，使用更快的配置
-            self.log_callback("开始OCR识别...")
+            # 进行OCR识别
             text = pytesseract.image_to_string(
-                image,
-                config=custom_config,
+                img,
                 lang=language,
-                timeout=30  # 设置超时时间
+                config=custom_config
             )
-            self.log_callback("OCR识别完成")
             
-            return page_num, text
+            # 缓存结果
+            self._cache_result(cache_key, text)
+            return text
+            
         except Exception as e:
-            self.log_callback(f"页面{page_num+1}处理错误: {str(e)}")
-            raise
-    
-    def detect_language(self, image):
-        # 简单的语言检测实现
-        # 这里可以使用更复杂的语言检测算法
-        try:
-            # 尝试使用英文识别
-            text = pytesseract.image_to_string(image, lang='eng')
-            if len(text.strip()) > 0:
-                return 'eng'
-            
-            # 尝试使用中文识别
-            text = pytesseract.image_to_string(image, lang='chi_sim')
-            if len(text.strip()) > 0:
-                return 'chi_sim'
-            
-            # 默认返回英文
-            return 'eng'
-        except:
-            return 'eng'
-    
-    def stop(self):
-        self._stop_event.set()
-    
-    def _get_cache_key(self):
-        # 使用文件路径和修改时间生成缓存键
-        file_mtime = os.path.getmtime(self.pdf_path)
-        file_info = f"{self.pdf_path}_{file_mtime}"
-        config_hash = hashlib.md5(json.dumps(self.config, sort_keys=True).encode()).hexdigest()
-        return f"{hashlib.md5(file_info.encode()).hexdigest()}_{config_hash}"
-    
+            self.log_callback(f"Tesseract处理失败: {str(e)}")
+            return None
+
     def _get_cached_result(self, cache_key):
+        """获取缓存结果"""
         # 使用配置的缓存目录
         settings = QSettings("PDF_OCR", "CacheSettings")
         cache_dir = settings.value("cache_path", os.path.join(os.path.expanduser('~'), '.pdfocr_cache'))
@@ -556,8 +618,9 @@ class OCRWorker(QRunnable):
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     return f.read()
         return None
-    
+
     def _cache_result(self, cache_key, result):
+        """缓存结果"""
         # 使用配置的缓存目录
         settings = QSettings("PDF_OCR", "CacheSettings")
         cache_dir = settings.value("cache_path", os.path.join(os.path.expanduser('~'), '.pdfocr_cache'))
@@ -566,6 +629,100 @@ class OCRWorker(QRunnable):
         
         with open(cache_file, 'w', encoding='utf-8') as f:
             f.write(result)
+
+    def _get_cache_key(self):
+        """生成缓存键"""
+        # 使用文件路径和修改时间生成缓存键
+        file_mtime = os.path.getmtime(self.pdf_path)
+        file_info = f"{self.pdf_path}_{file_mtime}"
+        config_hash = hashlib.md5(json.dumps(self.config, sort_keys=True).encode()).hexdigest()
+        return f"{hashlib.md5(file_info.encode()).hexdigest()}_{config_hash}"
+
+    def run(self):
+        """处理PDF文件"""
+        try:
+            # 重置缓存使用标记
+            self._cache_used = False
+            
+            # 验证PDF文件
+            self._validate_pdf()
+            
+            # 检查API配置
+            if self.config.get('source') == '百度OCR (在线)':
+                app_id = self.settings.value("app_id", "")
+                api_key = self.settings.value("api_key", "")
+                secret_key = self.settings.value("secret_key", "")
+                
+                if not all([app_id, api_key, secret_key]):
+                    raise ValueError("百度OCR API配置不完整，请先配置API信息")
+                    
+            # 获取Poppler路径
+            poppler_path = get_poppler_path()
+            if not poppler_path:
+                raise ValueError("找不到Poppler，请确保程序完整性")
+                
+            # 转换PDF为图像
+            try:
+                self.log_callback("开始转换PDF...")
+                self.log_callback(f"使用DPI: {self.config.get('dpi', 300)}")
+                self.log_callback(f"Poppler路径: {poppler_path}")
+                
+                # 检查Poppler工具
+                pdfinfo_path = os.path.join(poppler_path, 'pdfinfo.exe')
+                if not os.path.exists(pdfinfo_path):
+                    raise ValueError(f"找不到pdfinfo工具: {pdfinfo_path}")
+                    
+                images = convert_from_path(
+                    self.pdf_path,
+                    poppler_path=poppler_path,
+                    dpi=self.config.get('dpi', 300),
+                    thread_count=1  # 使用单线程避免并发问题
+                )
+                self.log_callback(f"PDF转换完成，共{len(images)}页")
+            except Exception as e:
+                self.log_callback(f"PDF转换错误: {str(e)}")
+                self.log_callback(traceback.format_exc())
+                raise Exception(f"PDF转换失败: {str(e)}")
+                
+            total_pages = len(images)
+            
+            # 创建输出目录
+            output_dir = os.path.dirname(self.pdf_path)
+            if not output_dir:
+                output_dir = os.getcwd()
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 处理每一页
+            output_path = os.path.splitext(self.pdf_path)[0] + '_ocr.txt'
+            result_text = ""
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for i, img in enumerate(images):
+                    try:
+                        # 更新进度
+                        self.progress_callback(int((i + 1) / total_pages * 100))
+                        
+                        # 处理页面
+                        if self.config.get('source') == '百度OCR (在线)':
+                            text = self._process_with_baidu(img)
+                        else:
+                            text = self._process_with_tesseract(img)
+                            
+                        if text:
+                            page_text = f"=== 第 {i+1} 页 ===\n{text}\n\n"
+                            f.write(page_text)
+                            result_text += page_text
+                            
+                    except Exception as e:
+                        self.log_callback(f"处理第 {i+1} 页时出错: {str(e)}")
+                        continue
+                        
+            self.finished_callback(result_text)  # 传递结果文本
+            
+        except Exception as e:
+            self.finished_callback(f"处理PDF时出错: {str(e)}")  # 传递错误信息
+    
+    def stop(self):
+        self._stop_event.set()
 
 class OCRSignals(QObject):
     log = pyqtSignal(str)
@@ -803,6 +960,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PDF OCR识别工具")
+        # 设置主窗口图标
+        icon_path = get_resource_path('icon.ico')
+        self.setWindowIcon(QIcon(icon_path))
         
         # 创建主窗口部件
         main_widget = QWidget()
@@ -903,7 +1063,6 @@ class MainWindow(QMainWindow):
 
         self.api_settings_button = QPushButton("百度API设置")
         self.api_settings_button.clicked.connect(self.show_baidu_api_settings)
-
         
         # 添加按钮到水平布局
         button_layout.addWidget(self.select_button)
@@ -997,6 +1156,17 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("PDF_OCR", "Settings")
         self.load_settings()
         
+        # 加载OCR配置
+        self.ocr_config = self.settings.value("ocr_config", {
+            'language': '中文 (chi_sim)',
+            'oem': 1,  # 使用LSTM模式，速度更快
+            'psm': 3,  # 全自动页面分割，无方向检测
+            'dpi': 300,  # 降低DPI以提高速度
+            'contrast': 1.0,
+            'brightness': 1.0,
+            'sharpen': 1.0
+        })
+        
         self.load_history()
         self.load_recent_files()
         
@@ -1011,16 +1181,6 @@ class MainWindow(QMainWindow):
             self.select_button.setEnabled(False)
             self.select_multiple_button.setEnabled(False)
             self.result_text.setText(error_msg)
-        
-        self.ocr_config = {
-            'language': '中文 (chi_sim)',
-            'oem': 1,  # 使用LSTM模式，速度更快
-            'psm': 3,  # 全自动页面分割，无方向检测
-            'dpi': 300,  # 降低DPI以提高速度
-            'contrast': 1.0,
-            'brightness': 1.0,
-            'sharpen': 1.0
-        }
         
         # 连接信号
         self.signals.log.connect(self._update_log)
@@ -1104,8 +1264,9 @@ class MainWindow(QMainWindow):
     
     def create_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
-        # 使用系统默认图标
-        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        # 使用icon.ico作为托盘图标
+        icon_path = get_resource_path('icon.ico')
+        self.tray_icon.setIcon(QIcon(icon_path))
         
         # 创建托盘菜单
         tray_menu = QMenu()
@@ -1183,9 +1344,21 @@ class MainWindow(QMainWindow):
             self.history_list.addItem(display_text)
     
     def add_to_history(self, filename, result):
+        """添加到历史记录"""
+        # 检查是否已存在相同文件的历史记录
+        for item in self.history:
+            if item['filename'] == filename:
+                # 更新现有记录的时间和结果
+                item['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                item['result'] = result
+                self.save_history()
+                self.update_history_list()
+                return
+                
+        # 如果是新文件，添加新记录
         history_item = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'filename': filename,  # 保存完整路径
+            'filename': filename,
             'result': result
         }
         self.history.append(history_item)
@@ -1232,9 +1405,23 @@ class MainWindow(QMainWindow):
     
     def show_config_dialog(self):
         dialog = OCRConfigDialog(self)
+        # 设置当前配置
+        dialog.language_combo.setCurrentText(self.ocr_config.get('language', '中文 (chi_sim)'))
+        dialog.oem_combo.setCurrentIndex(self.ocr_config.get('oem', 1))
+        dialog.psm_combo.setCurrentIndex(self.ocr_config.get('psm', 3))
+        dialog.dpi_spin.setValue(self.ocr_config.get('dpi', 300))
+        dialog.contrast_slider.setValue(int(self.ocr_config.get('contrast', 1.0) * 100))
+        dialog.brightness_slider.setValue(int(self.ocr_config.get('brightness', 1.0) * 100))
+        dialog.sharpen_slider.setValue(int(self.ocr_config.get('sharpen', 1.0) * 100))
+        # 设置识别来源
+        source = self.ocr_config.get('source', '本地OCR (Tesseract)')
+        dialog.source_combo.setCurrentText(source)
+        
         if dialog.exec_() == QDialog.Accepted:
             self.ocr_config = dialog.get_config()
-            self.log_text.append("OCR配置已更新")
+            # 保存OCR配置
+            self.settings.setValue("ocr_config", self.ocr_config)
+            self.log_text.append("OCR配置已更新并保存")
     
     def update_stats(self, text):
         # 更新统计信息
